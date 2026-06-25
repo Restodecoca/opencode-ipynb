@@ -230,7 +230,7 @@ expected output.
 
 ## Release
 
-The published npm tarball contains only the runtime: `dist/`, `python/ipynb_runner.py`, `python/requirements.txt`, `README.md`, and `LICENSE`. Internal developer docs (`AGENTS.md`, `TODO.md`, this repo's scripts and CI) are excluded from the npm package via `.npmignore`, but they are versioned in this repository for contributors.
+The published npm tarball contains only the runtime: `dist/`, `python/ipynb_runner.py`, `python/requirements.txt`, `README.md`, and `LICENSE`. Internal developer docs (`AGENTS.md`, `TODO.md`, the helper's dev scripts, the `.github/` workflows) are excluded from the npm package via `.npmignore`, and `AGENTS.md` / `TODO.md` are also gitignored so they are not versioned in this repository. Contributors track their work through GitHub Issues and Discussions.
 
 Cut a release by tagging the commit and pushing the tag, then publish it on GitHub — the workflow runs only on the `published` release event:
 

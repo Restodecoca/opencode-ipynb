@@ -14,3 +14,12 @@ __pycache__/
 .venv/
 venv/
 .tsbuildinfo
+
+# Contributor-only docs that are NOT shipped to npm and NOT versioned in git.
+# They are kept locally for development and live in AGENTS.md / TODO.md,
+# but the canonical, public roadmap and contributor guide live on GitHub:
+#   https://github.com/Restodecoca/opencode-ipynb/issues
+#   https://github.com/Restodecoca/opencode-ipynb/discussions
+AGENTS.md
+TODO.md
+test-output.log
