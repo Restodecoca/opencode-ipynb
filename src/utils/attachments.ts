@@ -2,7 +2,6 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { randomBytes } from "node:crypto"
-import { pathToFileURL } from "node:url"
 import type { ToolAttachment } from "@opencode-ai/plugin"
 
 export interface SavedAttachment {
@@ -45,9 +44,13 @@ export const saveBase64Image = async (
   return { path: filePath, mime, bytes: buffer.length, filename }
 }
 
-export const formatAttachment = (a: SavedAttachment): ToolAttachment => ({
-  type: "file",
-  mime: a.mime,
-  url: pathToFileURL(a.path).toString(),
-  filename: a.filename
-})
+export const formatAttachment = async (a: SavedAttachment): Promise<ToolAttachment> => {
+  const buffer = await fs.promises.readFile(a.path)
+  const data = buffer.toString("base64")
+  return {
+    type: "file",
+    mime: a.mime,
+    url: `data:${a.mime};base64,${data}`,
+    filename: a.filename
+  }
+}

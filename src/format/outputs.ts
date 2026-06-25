@@ -104,10 +104,10 @@ const formatDisplayWithAttachments = async (
       if (typeof value === "string") {
         if (shouldSaveImage(optsInput)) {
           const saved = await saveBase64Image(mime, value)
-          const att = formatAttachment(saved)
+          const att = await formatAttachment(saved)
           collector.attachments.push(att)
           collector.saved.push(saved)
-          lines.push(`- ${mime}: (saved ${humanBytes(saved.bytes)} to ${att.url})`)
+          lines.push(`- ${mime}: (saved ${humanBytes(saved.bytes)} as image attachment)`)
         } else {
           lines.push(`- ${imageNotice(mime, value)}`)
         }

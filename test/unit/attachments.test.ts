@@ -37,6 +37,16 @@ const makeFakeContext = (directory: string, worktree: string): ToolContext =>
 const TINY_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
+const cleanIpynbTmp = (): void => {
+  // The plugin writes image attachments to os.tmpdir()/opencode-ipynb/<prefix>-<pid>-<hex>/
+  // The URL no longer embeds the file path (data:), so we clean the whole plugin tmp root.
+  // Best-effort; tests are isolated because the opencode-ipynb prefix is unique to this plugin.
+  const root = path.join(os.tmpdir(), "opencode-ipynb")
+  if (fs.existsSync(root)) {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}
+
 describe("saveBase64Image", () => {
   it("decodes a valid base64 PNG, writes it to a temp directory, and returns the saved metadata", async () => {
     const saved = await saveBase64Image("image/png", TINY_PNG_BASE64, "test-png")
@@ -78,19 +88,39 @@ describe("saveBase64Image", () => {
 })
 
 describe("formatAttachment", () => {
-  it("builds a file:// ToolAttachment with the right mime, url, and filename", () => {
-    const saved = {
-      path: path.join(os.tmpdir(), "opencode-ipynb", "fake", "img.png"),
-      mime: "image/png",
-      bytes: 100,
-      filename: "img.png"
+  const TINY_RED_PNG_BASE64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9ZptKmoAAAAASUVORK5CYII="
+
+  it("builds a data: ToolAttachment with the right mime, url, and filename", async () => {
+    const saved = await saveBase64Image("image/png", TINY_RED_PNG_BASE64, "img")
+    try {
+      const att = await formatAttachment(saved)
+      expect(att.type).toBe("file")
+      expect(att.mime).toBe("image/png")
+      expect(att.filename).toBe("img.png")
+      expect(att.url.startsWith("data:image/png;base64,")).toBe(true)
+      const payload = att.url.slice("data:image/png;base64,".length)
+      const decoded = Buffer.from(payload, "base64")
+      expect(decoded.equals(Buffer.from(TINY_RED_PNG_BASE64, "base64"))).toBe(true)
+    } finally {
+      fs.rmSync(path.dirname(saved.path), { recursive: true, force: true })
     }
-    const att = formatAttachment(saved)
-    expect(att.type).toBe("file")
-    expect(att.mime).toBe("image/png")
-    expect(att.filename).toBe("img.png")
-    expect(att.url.startsWith("file://")).toBe(true)
-    expect(att.url).toContain("img.png")
+  })
+
+  it("embeds base64 inline in the data URL (required for opencode's image pipeline)", async () => {
+    const saved = await saveBase64Image("image/png", TINY_RED_PNG_BASE64, "img")
+    try {
+      const att = await formatAttachment(saved)
+      // Mirrors opencode's check in packages/opencode/src/image/image.ts:
+      //   if (!input.url.startsWith("data:") || !input.url.includes(";base64,")) → InvalidDataUrlError
+      // If either check fails, the attachment is silently dropped from the tool result.
+      expect(att.url.startsWith("data:")).toBe(true)
+      expect(att.url.includes(";base64,")).toBe(true)
+      // Must NOT be file:// — opencode's image normalize only accepts data URLs.
+      expect(att.url.startsWith("file://")).toBe(false)
+    } finally {
+      fs.rmSync(path.dirname(saved.path), { recursive: true, force: true })
+    }
   })
 })
 
@@ -159,7 +189,7 @@ describe("formatOutputsDetailed > image attachments", () => {
     }
   }
 
-  it("saves the image to a temp file and returns a file:// attachment when saveImages=true", async () => {
+  it("saves the image to a temp file and returns a data: attachment when saveImages=true", async () => {
     const result = await formatOutputsDetailed(codeCellWithImage, { saveImages: true })
 
     expect(result.attachments).toHaveLength(1)
@@ -169,14 +199,14 @@ describe("formatOutputsDetailed > image attachments", () => {
     expect(att.type).toBe("file")
     expect(att.mime).toBe("image/png")
     expect(att.filename).toBe("img.png")
-    expect(att.url.startsWith("file://")).toBe(true)
-    expect(att.url).toContain("img.png")
+    expect(att.url.startsWith("data:image/png;base64,")).toBe(true)
     expect(fs.existsSync(result.savedAttachments[0]?.path ?? "")).toBe(true)
 
     expect(result.rendered).toContain("image/png")
     expect(result.rendered).toContain("saved")
-    expect(result.rendered).toContain(att.url)
     expect(result.rendered).not.toContain("omitted by default")
+    // The full data URL is huge; the rendered text should NOT inline the base64.
+    expect(result.rendered).not.toContain(";base64,")
 
     cleanup(result.savedAttachments.map((s) => s.path))
   })
@@ -286,7 +316,7 @@ describe("ipynbReadTool > image attachments via includeImages", () => {
     expect(result.output).toContain("omitted by default")
   })
 
-  it("returns a file:// attachment for the image when includeImages is true", async () => {
+  it("returns a data: attachment for the image when includeImages is true", async () => {
     const ipynbReadTool = await importTool()
     const result = (await ipynbReadTool.execute(
       {
@@ -310,18 +340,14 @@ describe("ipynbReadTool > image attachments via includeImages", () => {
     expect(result.attachments?.length).toBe(1)
     const att = result.attachments?.[0]
     expect(att?.mime).toBe("image/png")
-    expect(att?.url.startsWith("file://")).toBe(true)
+    expect(att?.url.startsWith("data:image/png;base64,")).toBe(true)
     expect(att?.filename).toBe("img.png")
     expect(result.output).toContain("saved")
-    expect(result.output).toContain(att?.url ?? "")
+    // The full data URL is huge; the rendered text should NOT inline the base64.
+    expect(result.output).not.toContain(";base64,")
 
     if (att) {
-      try {
-        const url = new URL(att.url)
-        fs.rmSync(path.dirname(url.pathname.replace(/^\//, "")), { recursive: true, force: true })
-      } catch {
-        // best-effort cleanup
-      }
+      cleanIpynbTmp()
     }
   })
 })
@@ -345,19 +371,121 @@ describe("notebook file > makeReadImpl returns attachments for includeImages=tru
       )
       expect(result.attachments.length).toBe(1)
       expect(result.attachments[0]?.mime).toBe("image/png")
-      expect(result.attachments[0]?.url.startsWith("file://")).toBe(true)
+      expect(result.attachments[0]?.url.startsWith("data:image/png;base64,")).toBe(true)
       expect(result.rendered).toContain("saved")
-
-      for (const att of result.attachments) {
-        try {
-          const url = new URL(att.url)
-          fs.rmSync(path.dirname(url.pathname.replace(/^\//, "")), { recursive: true, force: true })
-        } catch {
-          // best-effort cleanup
-        }
-      }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true })
+      cleanIpynbTmp()
+    }
+  })
+})
+
+describe("regression: opencode image pipeline compatibility (gh#issue)", () => {
+  // The opencode session processor (packages/opencode/src/session/processor.ts) runs every
+  // image attachment through image.normalize (packages/opencode/src/image/image.ts), which
+  // starts with:
+  //   if (!input.url.startsWith("data:") || !input.url.includes(";base64,"))
+  //     return yield* new InvalidDataUrlError({ url: input.url })
+  // A file:// URL would hit InvalidDataUrlError, which the processor does NOT recover from
+  // (only ResizerUnavailableError is caught), so the image is dropped from the tool result
+  // and the user sees the misleading "could not be resized below the image size limit" line.
+  //
+  // These tests pin the contract: every image attachment emitted by the plugin MUST be a
+  // base64 data URL so opencode's image pipeline can decode and resize it.
+
+  const codeCellWithImage: CodeCellRaw = {
+    cell_type: "code",
+    execution_count: 1,
+    metadata: {},
+    outputs: [
+      {
+        output_type: "display_data",
+        data: { "image/png": TINY_PNG_BASE64 },
+        metadata: {}
+      }
+    ],
+    source: "x = 1"
+  }
+
+  it("formatAttachment returns a data: URL that passes opencode's InvalidDataUrlError check", async () => {
+    const saved = await saveBase64Image("image/png", TINY_PNG_BASE64, "img")
+    try {
+      const att = await formatAttachment(saved)
+      // Mirror the two checks from opencode's image.normalize.
+      const wouldBeInvalid = !att.url.startsWith("data:") || !att.url.includes(";base64,")
+      expect(wouldBeInvalid).toBe(false)
+      // Sanity: the data URL's payload must round-trip back to the file bytes.
+      const base64 = att.url.slice(att.url.indexOf(";base64,") + ";base64,".length)
+      const decoded = Buffer.from(base64, "base64")
+      expect(decoded.equals(Buffer.from(TINY_PNG_BASE64, "base64"))).toBe(true)
+    } finally {
+      cleanIpynbTmp()
+    }
+  })
+
+  it("formatOutputsDetailed never emits a file:// image attachment", async () => {
+    const result = await formatOutputsDetailed(codeCellWithImage, { saveImages: true })
+    try {
+      for (const att of result.attachments) {
+        expect(att.url.startsWith("file://")).toBe(false)
+        expect(att.url.startsWith("data:")).toBe(true)
+        expect(att.url.includes(";base64,")).toBe(true)
+      }
+    } finally {
+      cleanIpynbTmp()
+    }
+  })
+
+  it("formatCellMarkdownDetailed never emits a file:// image attachment", async () => {
+    const result = await formatCellMarkdownDetailed(codeCellWithImage, 0, {
+      includeOutputs: true,
+      saveImages: true
+    })
+    try {
+      for (const att of result.attachments) {
+        expect(att.url.startsWith("file://")).toBe(false)
+        expect(att.url.startsWith("data:")).toBe(true)
+        expect(att.url.includes(";base64,")).toBe(true)
+      }
+    } finally {
+      cleanIpynbTmp()
+    }
+  })
+
+  it("read tool returns a data: attachment for the image (end-to-end through the read service)", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-attach-regression-"))
+    try {
+      fs.copyFileSync(path.join(FIXTURES, "images.ipynb"), path.join(tempDir, "images.ipynb"))
+      const ipynbReadTool = (await import("../../src/tools/read.js")).ipynbReadTool
+      const result = (await ipynbReadTool.execute(
+        {
+          filePath: path.join(tempDir, "images.ipynb"),
+          cellIndex: 0,
+          start: undefined,
+          end: undefined,
+          includeOutputs: true,
+          includeErrors: true,
+          includeMetadata: false,
+          includeImages: true,
+          maxSourceChars: 12_000,
+          maxOutputChars: 6_000
+        },
+        makeFakeContext(tempDir, tempDir)
+      )) as {
+        attachments?: ReadonlyArray<{ mime: string; url: string }>
+        output: string
+      }
+      expect(result.attachments).toBeDefined()
+      for (const att of result.attachments ?? []) {
+        // The bug we're guarding against: a file:// URL here gets dropped by opencode.
+        expect(att.url.startsWith("file://")).toBe(false)
+        expect(att.url.startsWith(`data:${att.mime};base64,`)).toBe(true)
+      }
+      // The text note should NOT echo the full base64 back into the rendered markdown.
+      expect(result.output).not.toContain(";base64,")
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+      cleanIpynbTmp()
     }
   })
 })
