@@ -133,12 +133,11 @@ describe("formatCellMarkdownDetailed > error view", () => {
 })
 
 describe("formatOutputsDetailed > error view", () => {
-  it("returns rendered + attachments/savedAttachments, strips ANSI", async () => {
+  it("returns rendered + attachments, strips ANSI", async () => {
     const cell = makeErrorCell(["\u001b[31merr\u001b[0m"])
     const result = await formatOutputsDetailed(cell)
     expect(result.rendered).toContain("**NameError**")
     expect(result.rendered).not.toContain("\u001b[")
     expect(result.attachments).toEqual([])
-    expect(result.savedAttachments).toEqual([])
   })
 })

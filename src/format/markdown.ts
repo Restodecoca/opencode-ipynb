@@ -3,7 +3,6 @@ import { cellSource } from "../domain/notebook.js"
 import type { CellRaw, CodeCellRaw, MarkdownCellRaw, RawCellRaw } from "../domain/cell.js"
 import { formatOutputs, formatOutputsDetailed, type FormattedOutput, type OutputFormatOptions } from "./outputs.js"
 import type { ToolAttachment } from "@opencode-ai/plugin"
-import type { SavedAttachment } from "../utils/attachments.js"
 
 export interface MarkdownReadOptions {
   readonly includeOutputs: boolean
@@ -18,7 +17,6 @@ export interface MarkdownReadOptions {
 export interface FormattedCell {
   readonly rendered: string
   readonly attachments: ReadonlyArray<ToolAttachment>
-  readonly savedAttachments: ReadonlyArray<SavedAttachment>
 }
 
 const defaultReadOpts = (override: Partial<MarkdownReadOptions> = {}): MarkdownReadOptions => {
@@ -52,7 +50,6 @@ const defaultReadOpts = (override: Partial<MarkdownReadOptions> = {}): MarkdownR
 
 interface CellCollector {
   attachments: ToolAttachment[]
-  saved: SavedAttachment[]
 }
 
 const formatCodeCell = (cell: CodeCellRaw, index: number, opts: MarkdownReadOptions): string => {
@@ -119,7 +116,6 @@ const formatCodeCellDetailed = async (
       lines.push(formatted.rendered)
     }
     collector.attachments.push(...formatted.attachments)
-    collector.saved.push(...formatted.savedAttachments)
   } else if (opts.includeErrors) {
     const errOutputs = cell.outputs.filter((o) => o["output_type"] === "error")
     if (errOutputs.length > 0) {
@@ -132,7 +128,6 @@ const formatCodeCellDetailed = async (
       lines.push("")
       lines.push(formatted.rendered)
       collector.attachments.push(...formatted.attachments)
-      collector.saved.push(...formatted.savedAttachments)
     }
   }
   return lines.join("\n")
@@ -189,13 +184,13 @@ export const formatCellMarkdownDetailed = async (
   optsInput: Partial<MarkdownReadOptions> = {}
 ): Promise<FormattedCell> => {
   const opts = defaultReadOpts(optsInput)
-  const collector: CellCollector = { attachments: [], saved: [] }
+  const collector: CellCollector = { attachments: [] }
   if (cell.cell_type === "code") {
     const rendered = await formatCodeCellDetailed(cell, index, opts, collector)
-    return { rendered, attachments: collector.attachments, savedAttachments: collector.saved }
+    return { rendered, attachments: collector.attachments }
   }
   if (cell.cell_type === "markdown") {
-    return { rendered: formatMarkdownCell(cell, index, opts), attachments: [], savedAttachments: [] }
+    return { rendered: formatMarkdownCell(cell, index, opts), attachments: [] }
   }
-  return { rendered: formatRawCell(cell, index, opts), attachments: [], savedAttachments: [] }
+  return { rendered: formatRawCell(cell, index, opts), attachments: [] }
 }

@@ -1,11 +1,7 @@
 import { truncate, truncatePreview } from "../utils/truncate.js"
 import { humanBytes, isImageMime, estimateBase64Bytes } from "../utils/mime.js"
 import { stripAnsi } from "../utils/ansi.js"
-import {
-  saveBase64Image,
-  formatAttachment,
-  type SavedAttachment
-} from "../utils/attachments.js"
+import { formatAttachment } from "../utils/attachments.js"
 import { detectOutputKind } from "../domain/output.js"
 import type { CellRaw } from "../domain/cell.js"
 import type { NotebookRaw } from "../domain/notebook.js"
@@ -31,7 +27,6 @@ const defaultOpts = (override: Partial<OutputFormatOptions> = {}): OutputFormatO
 export interface FormattedOutput {
   readonly rendered: string
   readonly attachments: ReadonlyArray<ToolAttachment>
-  readonly savedAttachments: ReadonlyArray<SavedAttachment>
 }
 
 const imageNotice = (mime: string, value: string): string => {
@@ -89,7 +84,6 @@ const formatDisplay = (
 
 interface DisplayCollector {
   attachments: ToolAttachment[]
-  saved: SavedAttachment[]
 }
 
 const formatDisplayWithAttachments = async (
@@ -103,11 +97,9 @@ const formatDisplayWithAttachments = async (
     if (isImageMime(mime)) {
       if (typeof value === "string") {
         if (shouldSaveImage(optsInput)) {
-          const saved = await saveBase64Image(mime, value)
-          const att = await formatAttachment(saved)
+          const att = formatAttachment(mime, value)
           collector.attachments.push(att)
-          collector.saved.push(saved)
-          lines.push(`- ${mime}: (saved ${humanBytes(saved.bytes)} as image attachment)`)
+          lines.push(`- ${mime}: (attached as image, ${humanBytes(Buffer.byteLength(value, "base64"))})`)
         } else {
           lines.push(`- ${imageNotice(mime, value)}`)
         }
@@ -224,7 +216,7 @@ export const formatOutputsDetailed = async (
 ): Promise<FormattedOutput> => {
   const opts = defaultOpts(optsInput)
   if (cell.cell_type !== "code") {
-    return { rendered: "", attachments: [], savedAttachments: [] }
+    return { rendered: "", attachments: [] }
   }
   const sections: string[] = []
   let stdout = ""
@@ -232,7 +224,7 @@ export const formatOutputsDetailed = async (
   const displaySections: string[] = []
   const resultSections: string[] = []
   const errorSections: string[] = []
-  const collector: DisplayCollector = { attachments: [], saved: [] }
+  const collector: DisplayCollector = { attachments: [] }
 
   for (const out of cell.outputs) {
     const kind = detectOutputKind(out)
@@ -277,12 +269,11 @@ export const formatOutputsDetailed = async (
   }
 
   if (sections.length === 0) {
-    return { rendered: "(no output)", attachments: collector.attachments, savedAttachments: collector.saved }
+    return { rendered: "(no output)", attachments: collector.attachments }
   }
   return {
     rendered: sections.join("\n\n"),
-    attachments: collector.attachments,
-    savedAttachments: collector.saved
+    attachments: collector.attachments
   }
 }
 
