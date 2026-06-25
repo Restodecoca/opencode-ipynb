@@ -311,6 +311,32 @@ const makeExecutionImpl = (
         yield* pathSvc.ensureExists(abs)
         const displayPath = pathSvc.toDisplay(abs)
 
+        // Validate the request before we touch Python: a malformed payload is a
+        // user error, not an environment error. This ordering also makes the
+        // service testable in environments without a Python runtime.
+        const parsed = RunRequestSchema.safeParse({
+          filePath: abs,
+          mode: request.mode,
+          cellIndex: request.cellIndex,
+          start: request.start,
+          end: request.end,
+          kernel: request.kernel,
+          timeoutMs: request.timeoutMs,
+          save: request.save,
+          workingDirectory: request.workingDirectory,
+          maxOutputChars: request.maxOutputChars
+        })
+        if (!parsed.success) {
+          return yield* new NotebookValidationError({
+            message: "RunRequest failed schema validation",
+            filePath: abs,
+            issues: parsed.error.issues.map(
+              (i) => `${i.path.join(".") || "<root>"}: ${i.message}`
+            )
+          })
+        }
+        const payload: RunRequest = parsed.data
+
         const helperPath = yield* pythonSvc.findHelper()
         if (!helperPath) {
           return yield* new NotebookNotImplementedError({
@@ -356,28 +382,6 @@ const makeExecutionImpl = (
         })
 
         const startTs = Date.now()
-        const parsed = RunRequestSchema.safeParse({
-          filePath: abs,
-          mode: request.mode,
-          cellIndex: request.cellIndex,
-          start: request.start,
-          end: request.end,
-          kernel: request.kernel,
-          timeoutMs: request.timeoutMs,
-          save: request.save,
-          workingDirectory: request.workingDirectory,
-          maxOutputChars: request.maxOutputChars
-        })
-        if (!parsed.success) {
-          return yield* new NotebookValidationError({
-            message: "RunRequest failed schema validation",
-            filePath: abs,
-            issues: parsed.error.issues.map(
-              (i) => `${i.path.join(".") || "<root>"}: ${i.message}`
-            )
-          })
-        }
-        const payload: RunRequest = parsed.data
         const useWarm = useWarmKernel(request.mode)
         const response = useWarm && kernelManager
           ? yield* kernelManager.execute(abs, payload, { pythonPath: probe.pythonPath, helperPath })

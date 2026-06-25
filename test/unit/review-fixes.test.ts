@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { Effect } from "effect"
+import { spawnSync } from "node:child_process"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
@@ -28,6 +29,17 @@ import { run as runKernel } from "../../src/tools/kernel.js"
 import { buildServices } from "../../src/services/index.js"
 import type { ToolContext } from "@opencode-ai/plugin"
 import type { PermissionServiceShape } from "../../src/services/PermissionService.js"
+
+const pythonHas = (module: string): boolean => {
+  const code = `import sys, importlib.util; sys.exit(0 if importlib.util.find_spec("${module}") else 1)`
+  const r = spawnSync("python", ["-c", code], { encoding: "utf8" })
+  return r.status === 0
+}
+
+const describeIf = (cond: boolean, name: string, fn: () => void): void => {
+  if (cond) describe(name, fn)
+  else describe.skip(name, fn)
+}
 
 const makeContext = (dir: string): ToolContext =>
   (({
@@ -644,7 +656,10 @@ describe("NotebookExecutionService.execute > save=true preserves raw outputs", (
 
 // --- Bug 3 + Bug 5: kernel manager handles unexpected close + closed stdin ---
 
-describe("KernelManager.execute > close handler distinguishes shutdown from real requests", () => {
+describeIf(
+  pythonHas("nbformat") && pythonHas("nbclient") && pythonHas("ipykernel"),
+  "KernelManager.execute > close handler distinguishes shutdown from real requests",
+  () => {
   const HELPER = path.resolve("python", "ipynb_runner.py")
   const FIXTURES = path.resolve("test", "fixtures")
 
