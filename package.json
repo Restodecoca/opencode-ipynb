@@ -1,0 +1,69 @@
+{
+  "name": "opencode-ipynb",
+  "version": "0.1.0",
+  "description": "OpenCode community plugin that adds robust .ipynb (Jupyter Notebook) support: inspect, read, edit, run, outputs, clean, export, reproducibility reports, and warm kernels.",
+  "type": "module",
+  "packageManager": "bun@1.3.13",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Restodecoca/opencode-ipynb.git"
+  },
+  "homepage": "https://github.com/Restodecoca/opencode-ipynb",
+  "bugs": {
+    "url": "https://github.com/Restodecoca/opencode-ipynb/issues"
+  },
+  "files": [
+    "dist",
+    "python/ipynb_runner.py",
+    "python/requirements.txt",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/index.ts --target=bun --outdir=dist && tsc --emitDeclarationOnly --outDir dist",
+    "test": "bun test",
+    "lint:effect": "tsc --noEmit",
+    "prepare:effect-lsp": "effect-language-service patch"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "jupyter",
+    "ipynb",
+    "notebook",
+    "effect",
+    "typescript"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=0.0.0"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "latest",
+    "diff": "^7.0.0",
+    "effect": "^3.10.0",
+    "zod": "4"
+  },
+  "devDependencies": {
+    "@effect/language-service": "^0.86.2",
+    "@types/bun": "latest",
+    "@types/diff": "7.0.0",
+    "typescript": "^5.6.0"
+  }
+}

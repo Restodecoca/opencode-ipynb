@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+*.tgz
+npm-debug.log*
+
+# Documentation that only matters to contributors, not to npm consumers.
+AGENTS.md
+TODO.md
+test-output.log
+.gitignore
+.github/
+scripts/

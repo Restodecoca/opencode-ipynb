@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.local
+.idea/
+.vscode/
+*.tsbuildinfo
+.bun/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.tsbuildinfo
