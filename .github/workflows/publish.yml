@@ -43,7 +43,13 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Setup Node.js for publish
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+        run: npx --yes npm@latest publish --provenance --access public
