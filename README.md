@@ -167,15 +167,19 @@ OpenCode may use a different Python interpreter than the one in your terminal. T
 
    ```json
    {
-     "plugin": ["opencode-ipynb"],
-     "ipynb": {
-       "pythonPath": "C:/Users/Gabriel/miniconda3/envs/data/python.exe",
-        "preferUv": true,
-        "defaultTimeoutMs": 120000,
-        "defaultMaxOutputChars": 6000,
-        "warmKernel": false,
-        "allowOutsideWorktree": false
-      }
+     "plugin": [
+       [
+         "opencode-ipynb",
+         {
+           "pythonPath": "C:/Users/Gabriel/miniconda3/envs/data/python.exe",
+           "preferUv": true,
+           "defaultTimeoutMs": 120000,
+           "defaultMaxOutputChars": 6000,
+           "warmKernel": false,
+           "allowOutsideWorktree": false
+         }
+       ]
+     ]
    }
    ```
 
@@ -230,7 +234,7 @@ expected output.
 
 ## Release
 
-The published npm tarball contains only the runtime: `dist/`, `python/ipynb_runner.py`, `python/requirements.txt`, `README.md`, and `LICENSE`. Internal developer docs (`AGENTS.md`, `TODO.md`, the helper's dev scripts, the `.github/` workflows) are excluded from the npm package via `.npmignore`, and `AGENTS.md` / `TODO.md` are also gitignored so they are not versioned in this repository. Contributors track their work through GitHub Issues and Discussions.
+The published npm tarball contains only the runtime: `dist/`, `python/ipynb_runner.py`, `python/requirements.txt`, `README.md`, and `LICENSE`. Internal developer docs, helper dev scripts, and `.github/` workflows are excluded from the npm package via `.npmignore` and are also gitignored so they are not versioned in this repository. Contributors track their work through GitHub Issues and Discussions.
 
 Cut a release by tagging the commit and pushing the tag, then publish it on GitHub — the workflow runs only on the `published` release event:
 
@@ -320,16 +324,6 @@ test/
   fixtures/               # simple, outputs, error, images
   unit/                   # bun:test suites
 ```
-
-## Roadmap
-
-See `TODO.md` for the full plan and review-fix history (v0.1 → v1.5). Highlights:
-
-- v0.2: polished `ipynb_outputs` UI, full `ipynb_export` polish.
-- v0.3: real `nbclient`-based execution, save outputs, timeout, traceback capture.
-- v0.4: image attachments, reproducibility reports.
-- v1.0: kernel lifecycle management, cross-platform tests, npm publish.
-- v1.1–v1.5: security, Effect, path, packaging, rich-output, and cleanup review fixes.
 
 ## License
 
