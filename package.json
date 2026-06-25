@@ -1,6 +1,6 @@
 {
   "name": "opencode-ipynb",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode community plugin that adds robust .ipynb (Jupyter Notebook) support: inspect, read, edit, run, outputs, clean, export, reproducibility reports, and warm kernels.",
   "type": "module",
   "packageManager": "bun@1.3.13",
