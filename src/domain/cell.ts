@@ -34,7 +34,8 @@ export const RawCellSchema = z
     cell_type: z.literal("raw"),
     id: z.string().optional(),
     metadata: CellMetadataSchema,
-    source: SourceSchema
+    source: SourceSchema,
+    attachments: z.record(z.string(), z.unknown()).optional()
   })
   .passthrough()
 export type RawCellRaw = z.infer<typeof RawCellSchema>

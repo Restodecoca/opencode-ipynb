@@ -3,7 +3,6 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
-import type { ToolContext } from "@opencode-ai/plugin"
 import {
   makePathService,
   makeNotebookFileService
@@ -19,18 +18,6 @@ import type { CodeCellRaw, MarkdownCellRaw, RawCellRaw } from "../../src/domain/
 import type { NotebookRaw } from "../../src/domain/notebook.js"
 
 const FIXTURES = path.resolve(__dirname, "..", "fixtures")
-
-const makeFakeContext = (directory: string, worktree: string): ToolContext =>
-  ({
-    sessionID: "test",
-    messageID: "test",
-    agent: "test",
-    directory,
-    worktree,
-    abort: new AbortController().signal,
-    metadata: () => {},
-    ask: async () => {}
-  }) as unknown as ToolContext
 
 const runOrThrow = async <A, E>(
   effect: Effect.Effect<A, E, never>
@@ -129,6 +116,20 @@ describe("analyzeReproducibility > non-deterministic patterns", () => {
     const notebook = buildNotebook([codeCell("import numpy as np\nx = np.random.rand(3)\nprint(x)")])
     const warnings = analyzeReproducibility(notebook)
     expect(warnings).toContain("cell 0: uses np.random without an explicit seed")
+  })
+
+
+  it("does not flag np.random when the same cell seeds it", () => {
+    const notebook = buildNotebook([
+      codeCell("import numpy as np\nnp.random.seed(0)\nx = np.random.rand(3)")
+    ])
+    const warnings = analyzeReproducibility(notebook)
+    expect(warnings).not.toContain(
+      "cell 0: uses np.random without an explicit seed"
+    )
+    expect(warnings).not.toContain(
+      "cell 0: random.seed is called inside the notebook (deterministic only when re-executed in order)"
+    )
   })
 
   it("flags numpy.random with its own dedicated warning", () => {
@@ -247,6 +248,8 @@ describe("formatInspectSummary > reproducibility section", () => {
       displayPath: "x.ipynb",
       notebook: emptyNotebook,
       cells: [cellInspection],
+      includeMetadata: false,
+      includeOutputsSummary: true,
       totalCells: 1,
       truncated: false,
       reproducibilityWarnings: []
@@ -262,6 +265,8 @@ describe("formatInspectSummary > reproducibility section", () => {
       displayPath: "x.ipynb",
       notebook: emptyNotebook,
       cells: [cellInspection],
+      includeMetadata: false,
+      includeOutputsSummary: true,
       totalCells: 1,
       truncated: false,
       reproducibilityWarnings: ["cell 0: uses np.random without an explicit seed"]
@@ -278,6 +283,8 @@ describe("formatInspectSummary > reproducibility section", () => {
       displayPath: "x.ipynb",
       notebook: emptyNotebook,
       cells: [cellInspection],
+      includeMetadata: false,
+      includeOutputsSummary: true,
       totalCells: 1,
       truncated: false,
       reproducibilityWarnings: ["cell 0: depends on wall-clock time"]
@@ -289,4 +296,23 @@ describe("formatInspectSummary > reproducibility section", () => {
     expect(sectionStart).toBeGreaterThan(-1)
     expect(sectionStart).toBeGreaterThan(tableEnd)
   })
+describe("formatInspectSummary > bounded metadata", () => {
+  it("truncates metadata JSON to the configured cap", () => {
+    const notebook = buildNotebook([codeCell("x = 1")])
+    notebook.metadata = { blob: "x".repeat(30_000) }
+    const text = formatInspectSummary({
+      filePath: "/tmp/n.ipynb",
+      displayPath: "n.ipynb",
+      notebook,
+      cells: [],
+      totalCells: 1,
+      truncated: false,
+      includeMetadata: true,
+      includeOutputsSummary: false
+    })
+    expect(text).toContain("metadata truncated")
+    expect(text.length).toBeLessThan(30_000)
+  })
+})
+
 })

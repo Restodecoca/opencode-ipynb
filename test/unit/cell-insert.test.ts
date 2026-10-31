@@ -7,11 +7,10 @@ import {
   makePathService,
   makePermissionService,
   makeNotebookFileService,
-  makeEditImpl,
-  makeDiffService
+  makeEditImpl
 } from "../../src/services/index.js"
 import { CellIndexOutOfBoundsError } from "../../src/domain/errors.js"
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolContext } from "../../src/tool.js"
 
 const FIXTURES = path.resolve(__dirname, "..", "fixtures")
 
@@ -35,8 +34,7 @@ const setupEdit = (worktree: string) => {
   })
   const fileSvc = makeNotebookFileService()
   const permSvc = makePermissionService(makeFakeContext(worktree, worktree))
-  const diffSvc = makeDiffService()
-  return makeEditImpl(pathSvc, fileSvc, diffSvc, permSvc)
+  return makeEditImpl(pathSvc, fileSvc, permSvc)
 }
 
 const copyFixture = (dest: string): string => {
@@ -46,6 +44,27 @@ const copyFixture = (dest: string): string => {
 }
 
 describe("NotebookEditService.insertCell", () => {
+
+  it("adds a unique nbformat 4.5 cell id when the notebook requires one", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-insert-id-"))
+    try {
+      const file = copyFixture(dir)
+      const edit = setupEdit(dir)
+      const first = await Effect.runPromise(edit.insertCell(file, "code", "a = 1", undefined))
+      const second = await Effect.runPromise(
+        edit.insertCell(file, "markdown", "# b", undefined)
+      )
+      const onDisk = JSON.parse(fs.readFileSync(file, "utf8")) as {
+        cells: Array<{ id?: string }>
+      }
+      const ids = [onDisk.cells[first.cellIndex]?.id, onDisk.cells[second.cellIndex]?.id]
+      expect(ids.every((id) => typeof id === "string" && id.length > 0)).toBe(true)
+      expect(new Set(ids).size).toBe(2)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("inserts a new code cell at a specific index", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-insert-"))
     try {

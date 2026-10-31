@@ -34,13 +34,6 @@ export const hasIpynbExtension = (p: string): boolean => {
   return lower.endsWith(".ipynb")
 }
 
-export const ensureIpynbExtension = (p: string): string => {
-  if (hasIpynbExtension(p)) {
-    return p
-  }
-  return `${p}.ipynb`
-}
-
 export interface ResolveInput {
   readonly inputPath: string
   readonly base: string
@@ -74,7 +67,7 @@ export const makeRelative = (
   to: string,
   opts: RelativeOptions = {}
 ): string => {
-  const relative = opts.relativeFn ?? ((a: string, b: string) => b)
+  const relative = opts.relativeFn ?? ((_a: string, b: string) => b)
   return relative(from, to)
 }
 

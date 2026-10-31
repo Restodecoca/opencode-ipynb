@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
@@ -14,7 +14,7 @@ import {
 } from "../../src/services/NotebookFileService.js"
 import { makePythonService, type PythonServiceShape } from "../../src/services/PythonService.js"
 import { NotebookValidationError } from "../../src/domain/errors.js"
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolContext } from "../../src/tool.js"
 
 const makeContext = (dir: string): ToolContext =>
   (({
@@ -77,9 +77,9 @@ describe("NotebookExecutionService.execute > RunRequest validation", () => {
       }
       const result = await Effect.runPromiseExit(exec.execute(file, req))
       if (result._tag === "Failure") {
-        const cause = result.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string; issues?: ReadonlyArray<string> }
+        const cause = Cause.findErrorOption(result.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string; issues?: ReadonlyArray<string> }
           expect(err._tag).toBe("NotebookValidation")
           expect(Array.isArray(err.issues)).toBe(true)
           const joined = (err.issues ?? []).join(" ")
@@ -130,9 +130,9 @@ describe("NotebookExecutionService.execute > RunRequest validation", () => {
       }
       const result = await Effect.runPromiseExit(exec.execute(file, req))
       if (result._tag === "Failure") {
-        const cause = result.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string }
+        const cause = Cause.findErrorOption(result.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string }
           expect(err._tag).toBe("NotebookValidation")
         } else {
           throw new Error("expected a typed failure, got defect")

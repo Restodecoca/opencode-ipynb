@@ -1,11 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import { spawnSync } from "node:child_process"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
-import { NotebookSchema } from "../../src/domain/notebook.js"
-import type { NotebookRaw } from "../../src/domain/notebook.js"
 import {
   buildPersistedOutputs,
   makeExecutionImpl,
@@ -13,22 +11,20 @@ import {
 } from "../../src/services/NotebookExecutionService.js"
 import { makePathService, type PathServiceShape } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
-import {
-  makeNotebookFileService,
-  type NotebookFileServiceShape
-} from "../../src/services/NotebookFileService.js"
+import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
 import {
   makePythonService,
-  makeKernelManager,
-  type KernelManagerShape,
-  type KernelRuntimeOptions,
   type PythonServiceShape
 } from "../../src/services/PythonService.js"
+import {
+  makeKernelManager,
+  type KernelManagerShape,
+  type KernelRuntimeOptions
+} from "../../src/services/KernelManager.js"
 import { runRepro } from "../../src/tools/repro.js"
 import { run as runKernel } from "../../src/tools/kernel.js"
 import { buildServices } from "../../src/services/index.js"
-import type { ToolContext } from "@opencode-ai/plugin"
-import type { PermissionServiceShape } from "../../src/services/PermissionService.js"
+import type { ToolContext } from "../../src/tool.js"
 
 const pythonHas = (module: string): boolean => {
   const code = `import sys, importlib.util; sys.exit(0 if importlib.util.find_spec("${module}") else 1)`
@@ -52,20 +48,6 @@ const makeContext = (dir: string): ToolContext =>
     metadata: () => {},
     ask: async () => {}
   }) as unknown) as ToolContext
-
-const buildTinyNotebook = (): NotebookRaw =>
-  NotebookSchema.parse({
-    nbformat: 4,
-    nbformat_minor: 5,
-    metadata: {
-      kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
-      language_info: { name: "python" }
-    },
-    cells: [
-      { cell_type: "code", metadata: {}, execution_count: null, outputs: [], source: "x = 1" },
-      { cell_type: "code", metadata: {}, execution_count: null, outputs: [], source: "y = 2" }
-    ]
-  }) as NotebookRaw
 
 describe("buildPersistedOutputs > documented order comment", () => {
   it("orders stream, execute_result, display_data, error", () => {
@@ -100,7 +82,7 @@ describe("NotebookExecutionService.execute > save=true does not mutate the parse
 })
 
 describe("OPENCODE_IPYNB_OPTIONS > allowOutsideWorktree reaches PathService end-to-end", () => {
-  it("PathService is no-op when the env-resolved option is true (buildServices wiring)", () => {
+  it("PathService is no-op when the env-resolved option is true (buildServices wiring)", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-envopts-"))
     try {
       const pathSvc: PathServiceShape = makePathService({
@@ -109,13 +91,10 @@ describe("OPENCODE_IPYNB_OPTIONS > allowOutsideWorktree reaches PathService end-
         platform: process.platform,
         allowOutsideWorktree: true
       })
-      let threw = false
-      try {
+      const result = await Effect.runPromiseExit(
         pathSvc.ensureInsideWorktree(path.join(dir, "..", "..", "evil.ipynb"))
-      } catch {
-        threw = true
-      }
-      expect(threw).toBe(false)
+      )
+      expect(result._tag).toBe("Success")
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -145,9 +124,9 @@ describe("Services > ensureInsideWorktree is enforced when allowOutsideWorktree 
       const read = makeReadImpl(pathSvc, fileSvc)
       const exit = await Effect.runPromiseExit(read.readCell(outside, 0))
       if (exit._tag === "Failure") {
-        const cause = exit.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string; filePath?: string }
+        const cause = Cause.findErrorOption(exit.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string; filePath?: string }
           expect(err._tag).toBe("PathOutsideWorktree")
           expect(err.filePath).toBe(outside)
         } else {
@@ -168,15 +147,14 @@ describe("Services > ensureInsideWorktree is enforced when allowOutsideWorktree 
     try {
       const { pathSvc, fileSvc, permSvc } = makeServices(dir)
       const { makeEditImpl } = await import("../../src/services/NotebookEditService.js")
-      const { makeDiffService } = await import("../../src/services/DiffService.js")
-      const edit = makeEditImpl(pathSvc, fileSvc, makeDiffService(), permSvc)
+      const edit = makeEditImpl(pathSvc, fileSvc, permSvc)
       const exit = await Effect.runPromiseExit(
         edit.editCell(outside, { cellIndex: 0, source: "x = 1" })
       )
       if (exit._tag === "Failure") {
-        const cause = exit.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string }
+        const cause = Cause.findErrorOption(exit.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string }
           expect(err._tag).toBe("PathOutsideWorktree")
         } else {
           throw new Error("expected typed failure, got defect")
@@ -198,9 +176,9 @@ describe("Services > ensureInsideWorktree is enforced when allowOutsideWorktree 
       const clean = makeCleanImpl(pathSvc, fileSvc, permSvc)
       const exit = await Effect.runPromiseExit(clean.clean(outside))
       if (exit._tag === "Failure") {
-        const cause = exit.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string }
+        const cause = Cause.findErrorOption(exit.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string }
           expect(err._tag).toBe("PathOutsideWorktree")
         } else {
           throw new Error("expected typed failure, got defect")
@@ -222,9 +200,9 @@ describe("Services > ensureInsideWorktree is enforced when allowOutsideWorktree 
       const inspect = makeInspectImpl(pathSvc, fileSvc)
       const exit = await Effect.runPromiseExit(inspect.inspect(outside))
       if (exit._tag === "Failure") {
-        const cause = exit.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string }
+        const cause = Cause.findErrorOption(exit.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string }
           expect(err._tag).toBe("PathOutsideWorktree")
         } else {
           throw new Error("expected typed failure, got defect")
@@ -246,9 +224,9 @@ describe("Services > ensureInsideWorktree is enforced when allowOutsideWorktree 
       const out = makeOutputImpl(pathSvc, fileSvc, permSvc)
       const exit = await Effect.runPromiseExit(out.listOutputs(outside))
       if (exit._tag === "Failure") {
-        const cause = exit.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string }
+        const cause = Cause.findErrorOption(exit.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string }
           expect(err._tag).toBe("PathOutsideWorktree")
         } else {
           throw new Error("expected typed failure, got defect")
@@ -278,9 +256,9 @@ describe("Services > ensureInsideWorktree is enforced when allowOutsideWorktree 
         })
       )
       if (exit._tag === "Failure") {
-        const cause = exit.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string }
+        const cause = Cause.findErrorOption(exit.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string }
           expect(err._tag).toBe("PathOutsideWorktree")
         } else {
           throw new Error("expected typed failure, got defect")
@@ -306,9 +284,9 @@ describe("ipynb_repro > PathOutsideWorktreeError for paths outside the worktree"
         runRepro(services, { filePath: outside })
       )
       if (exit._tag === "Failure") {
-        const cause = exit.cause
-        if (cause._tag === "Fail") {
-          const err = cause.error as { _tag?: string; filePath?: string }
+        const cause = Cause.findErrorOption(exit.cause)
+        if (cause._tag === "Some") {
+          const err = cause.value as { _tag?: string; filePath?: string }
           expect(err._tag).toBe("PathOutsideWorktree")
           expect(err.filePath).toBe(outside)
         } else {
@@ -338,9 +316,9 @@ describe("ipynb_kernel > PathOutsideWorktreeError for outside-worktree paths", (
           runKernel(services, { action: "restart", filePath: outside })
         )
         if (exit._tag === "Failure") {
-          const cause = exit.cause
-          if (cause._tag === "Fail") {
-            const err = cause.error as { _tag?: string; filePath?: string }
+          const cause = Cause.findErrorOption(exit.cause)
+          if (cause._tag === "Some") {
+            const err = cause.value as { _tag?: string; filePath?: string }
             expect(err._tag).toBe("PathOutsideWorktree")
             expect(err.filePath).toBe(outside)
           } else {
@@ -373,9 +351,9 @@ describe("ipynb_kernel > PathOutsideWorktreeError for outside-worktree paths", (
           runKernel(services, { action: "shutdown", filePath: outside })
         )
         if (exit._tag === "Failure") {
-          const cause = exit.cause
-          if (cause._tag === "Fail") {
-            const err = cause.error as { _tag?: string }
+          const cause = Cause.findErrorOption(exit.cause)
+          if (cause._tag === "Some") {
+            const err = cause.value as { _tag?: string }
             expect(err._tag).toBe("PathOutsideWorktree")
           } else {
             throw new Error("expected typed failure, got defect")
@@ -398,7 +376,7 @@ describe("ipynb_kernel > PathOutsideWorktreeError for outside-worktree paths", (
 
 // --- Bug 4: reportEnv honors defaultTimeoutMs --------------------------------
 
-describe("NotebookExecutionService.reportEnv > honors defaultTimeoutMs", () => {
+describeIf(pythonHas("pip"), "NotebookExecutionService.reportEnv > honors defaultTimeoutMs", () => {
   const buildExec = (dir: string, defaultTimeoutMs?: number) => {
     const pathSvc = makePathService({ directory: dir, worktree: dir, platform: process.platform })
     const permSvc = makePermissionService(makeContext(dir))
@@ -661,8 +639,6 @@ describeIf(
   "KernelManager.execute > close handler distinguishes shutdown from real requests",
   () => {
   const HELPER = path.resolve("python", "ipynb_runner.py")
-  const FIXTURES = path.resolve("test", "fixtures")
-
   it("rejects an in-flight cell request with PythonRunnerError when the kernel is killed while busy", async () => {
     // Create a slow fixture (a cell that sleeps for ~3s) so we can race
     // a SIGKILL against the in-flight request.
@@ -709,8 +685,12 @@ describeIf(
         })
       )
       pending.catch(() => {})
-      // Give the kernel a moment to actually start executing the cell.
-      await new Promise<void>((resolve) => setTimeout(resolve, 500))
+      // Give the kernel time to actually start and begin executing the cell.
+      // Under a loaded full-suite run, Jupyter startup can take several seconds.
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && (mgr.list()[0]?.pid ?? -1) <= 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 100))
+      }
       const pid = mgr.list()[0]?.pid ?? -1
       expect(pid).toBeGreaterThan(0)
       // SIGKILL: the proc exits with a non-zero code, but the in-flight
@@ -728,7 +708,7 @@ describeIf(
       await Effect.runPromise(mgr.disposeAll())
       fs.rmSync(dir, { recursive: true, force: true })
     }
-  }, 30_000)
+  }, 60_000)
 })
 
 // --- Smell G: truncateText accepts a hintKey parameter -----------------------

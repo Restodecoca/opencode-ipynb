@@ -36,12 +36,16 @@ export const inspectCell = (cell: CellRaw, index: number): CellInspection => {
     let imageCount = 0
     let streamSummary = ""
     let errorSummary = ""
+    let streamBytes = 0
 
     for (const out of outputs) {
       const ot = out["output_type"]
       if (ot === "stream") {
         const text = outputTextToString(out["text"])
-        streamSummary += text.slice(0, 200) + (text.length > 200 ? "..." : "")
+        streamBytes += text.length
+        if (streamSummary.length < 400) {
+          streamSummary += text.slice(0, 200) + (text.length > 200 ? "..." : "")
+        }
       } else if (ot === "error") {
         const ename = String(out["ename"] ?? "")
         const evalue = String(out["evalue"] ?? "")
@@ -65,7 +69,7 @@ export const inspectCell = (cell: CellRaw, index: number): CellInspection => {
       }
     }
 
-    if (totalBytes > 50_000) {
+    if (totalBytes + streamBytes > 50_000) {
       hasLarge = true
     }
 

@@ -7,11 +7,10 @@ import {
   makePathService,
   makePermissionService,
   makeNotebookFileService,
-  makeEditImpl,
-  makeDiffService
+  makeEditImpl
 } from "../../src/services/index.js"
 import { CellIndexOutOfBoundsError } from "../../src/domain/errors.js"
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolContext } from "../../src/tool.js"
 
 const FIXTURES = path.resolve(__dirname, "..", "fixtures")
 
@@ -35,8 +34,7 @@ const setupEdit = (worktree: string) => {
   })
   const fileSvc = makeNotebookFileService()
   const permSvc = makePermissionService(makeFakeContext(worktree, worktree))
-  const diffSvc = makeDiffService()
-  return makeEditImpl(pathSvc, fileSvc, diffSvc, permSvc)
+  return makeEditImpl(pathSvc, fileSvc, permSvc)
 }
 
 const copyFixture = (dest: string, fixture = "simple.ipynb"): string => {
@@ -116,11 +114,12 @@ describe("NotebookEditService.deleteCell", () => {
       const before = readCells(file)
       const targetIdx = 1
       const removedType = before[targetIdx]?.cell_type
+      if (removedType === undefined) throw new Error("fixture cell is missing")
       const removedSrc = sourceOf(before[targetIdx])
       const result = await Effect.runPromise(
         edit.deleteCell(file, targetIdx)
       )
-      expect(result.deletedType).toBe(removedType)
+      expect(result.deletedType).toBe(removedType as typeof result.deletedType)
       expect(result.deletedPreview.length).toBeGreaterThan(0)
       const after = readCells(file)
       expect(after.length).toBe(before.length - 1)

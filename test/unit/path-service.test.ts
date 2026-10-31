@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { Effect } from "effect"
+import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { makePathService } from "../../src/services/PathService.js"
 
@@ -124,6 +126,90 @@ describe("PathService.ensureInsideWorktree", () => {
     expect(allowedResult).toBeUndefined()
   })
 
+  it("rejects a symlink inside the worktree that points outside", async () => {
+    if (process.platform === "win32") return
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-link-"))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-out-"))
+    const target = path.join(outside, "secret.ipynb")
+    const link = path.join(worktree, "link.ipynb")
+    fs.writeFileSync(target, "{}")
+    fs.symlinkSync(target, link)
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform
+    })
+    try {
+      const err = await Effect.runPromise(
+        pathSvc.ensureInsideWorktree(link).pipe(Effect.flip)
+      )
+      expect((err as { _tag?: string })._tag).toBe("PathOutsideWorktree")
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a nonexistent target under a symlinked ancestor", async () => {
+    if (process.platform === "win32") return
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-ancestor-"))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-ancestor-out-"))
+    fs.symlinkSync(outside, path.join(worktree, "escape"))
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform
+    })
+    try {
+      const err = await Effect.runPromise(
+        pathSvc.ensureInsideWorktree(path.join(worktree, "escape", "new", "file.ipynb")).pipe(Effect.flip)
+      )
+      expect((err as { _tag?: string })._tag).toBe("PathOutsideWorktree")
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a dangling symlink whose target is outside", async () => {
+    if (process.platform === "win32") return
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-dangling-"))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-dangling-out-"))
+    const link = path.join(worktree, "dangling.ipynb")
+    fs.symlinkSync(path.join(outside, "missing.ipynb"), link)
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform
+    })
+    try {
+      const err = await Effect.runPromise(
+        pathSvc.ensureInsideWorktree(link).pipe(Effect.flip)
+      )
+      expect((err as { _tag?: string })._tag).toBe("PathOutsideWorktree")
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it("accepts an inside name that starts with two dots", async () => {
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-dots-"))
+    const file = path.join(worktree, "..notes.ipynb")
+    fs.writeFileSync(file, "{}")
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform
+    })
+    try {
+      const result = await Effect.runPromise(pathSvc.ensureInsideWorktree(file))
+      expect(result).toBeUndefined()
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+    }
+  })
+
   it("rejects Windows paths on a different drive", async () => {
     if (process.platform !== "win32") return
     const pathSvc = makePathService({
@@ -174,5 +260,86 @@ describe("PathService.toDisplay", () => {
     const result = pathSvc.toDisplay("foo\\bar.ipynb")
     expect(result.includes("\\")).toBe(false)
     expect(result.endsWith("bar.ipynb")).toBe(true)
+  })
+})
+
+
+  it("does not rewrite backslashes in POSIX filenames", async () => {
+    if (process.platform === "win32") return
+    const pathSvc = makePathService({
+      directory: "/foo",
+      worktree: "/foo",
+      platform: process.platform
+    })
+    expect(await Effect.runPromise(pathSvc.resolve("a\\b.ipynb"))).toBe(
+      "/foo/a\\b.ipynb"
+    )
+  })
+
+describe("PathService.writeFileSafe", () => {
+  it("rejects a target symlink that escapes the worktree", async () => {
+    if (process.platform === "win32") return
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-write-safe-"))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-write-safe-out-"))
+    const target = path.join(outside, "keep.txt")
+    const link = path.join(worktree, "out.txt")
+    fs.writeFileSync(target, "outside")
+    fs.symlinkSync(target, link)
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform
+    })
+    try {
+      const result = await Effect.runPromiseExit(pathSvc.writeFileSafe(link, "inside"))
+      expect(result._tag).toBe("Failure")
+      expect(fs.readFileSync(target, "utf8")).toBe("outside")
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it("writes through a symlink whose target stays inside the worktree", async () => {
+    if (process.platform === "win32") return
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-write-safe-"))
+    const target = path.join(worktree, "target.txt")
+    const link = path.join(worktree, "link.txt")
+    fs.writeFileSync(target, "old")
+    fs.symlinkSync(target, link)
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform
+    })
+    try {
+      await runOrThrow(pathSvc.writeFileSafe(link, "new"))
+      expect(fs.readFileSync(target, "utf8")).toBe("new")
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects an ancestor symlink outside the worktree", async () => {
+    if (process.platform === "win32") return
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-write-safe-"))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-write-safe-out-"))
+    fs.symlinkSync(outside, path.join(worktree, "escape"))
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform
+    })
+    try {
+      const result = await Effect.runPromiseExit(
+        pathSvc.writeFileSafe(path.join(worktree, "escape", "newdir", "out.txt"), "x")
+      )
+      expect(result._tag).toBe("Failure")
+      expect(fs.readdirSync(outside)).toEqual([])
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
   })
 })

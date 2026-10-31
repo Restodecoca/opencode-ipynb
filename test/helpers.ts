@@ -1,3 +1,4 @@
+import { describe } from "bun:test"
 import { spawnSync } from "node:child_process"
 
 export const pythonHas = (module: string): boolean => {

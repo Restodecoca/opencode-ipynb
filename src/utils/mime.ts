@@ -1,14 +1,14 @@
-const IMAGE_MIMES = new Set([
+const ATTACHABLE_IMAGE_MIMES = new Set([
   "image/png",
   "image/jpeg",
   "image/jpg",
   "image/gif",
-  "image/svg+xml",
   "image/webp",
   "image/bmp"
 ])
 
-export const isImageMime = (mime: string): boolean => IMAGE_MIMES.has(mime.toLowerCase())
+export const isImageMime = (mime: string): boolean =>
+  mime.toLowerCase().startsWith("image/")
 
 export const estimateBase64Bytes = (data: string): number => {
   if (!data) {
@@ -28,3 +28,6 @@ export const humanBytes = (n: number): string => {
   }
   return `${(n / (1024 * 1024)).toFixed(2)} MB`
 }
+
+export const isAttachableImageMime = (mime: string): boolean =>
+  ATTACHABLE_IMAGE_MIMES.has(mime.toLowerCase())

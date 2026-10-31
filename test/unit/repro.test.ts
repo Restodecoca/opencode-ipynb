@@ -4,7 +4,6 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import { Effect } from "effect"
-import type { ToolContext } from "@opencode-ai/plugin"
 import { makePathService } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
 import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
@@ -136,6 +135,16 @@ describe("detectRandomSeeds", () => {
     ])
     const hits = detectRandomSeeds(notebook)
     expect(hits).toEqual([{ cellIndex: 0, name: "np.random.seed" }])
+  })
+
+
+  it("flags numpy.random.seed(...)", () => {
+    const notebook = buildNotebook([
+      codeCell("import numpy\nnumpy.random.seed(42)\nx = numpy.random.rand(3)")
+    ])
+    expect(detectRandomSeeds(notebook)).toEqual([
+      { cellIndex: 0, name: "numpy.random.seed" }
+    ])
   })
 
   it("flags cells with random.seed(", () => {
@@ -364,6 +373,38 @@ describeIf(pythonOnPath(), "NotebookExecutionService.reportEnv", () => {
       fs.writeFileSync(file, JSON.stringify({ hello: "world" }))
       const exit = await Effect.runPromiseExit(buildExec(dir).reportEnv(file))
       expect(exit._tag).toBe("Failure")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describeIf(pythonOnPath(), "runRepro env failures", () => {
+  it("reports the environment error instead of claiming Python is unavailable", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-repro-env-"))
+    const file = path.join(dir, "notebook.ipynb")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: { kernelspec: { display_name: "Python 3", name: "python3", language: "python" } },
+        cells: [codeCell("x = 1")]
+      })
+    )
+    const services = buildServices(makeContext(dir))
+    const failing = {
+      ...services,
+      execution: {
+        ...services.execution,
+        reportEnv: () => Effect.fail(new Error("helper exploded") as never)
+      }
+    }
+    try {
+      const result = await Effect.runPromise(
+        runRepro(failing, { filePath: file })
+      )
+      expect(result.output).toContain("environment report failed: helper exploded")
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

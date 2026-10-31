@@ -1,14 +1,14 @@
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolContext } from "../tool.js"
 import { Effect } from "effect"
 import {
   PluginOptionsSchema,
   parsePluginOptions,
+  resolvePythonPath,
   type PluginOptions
 } from "../plugin-options.js"
 import { makePathService, type PathServiceShape } from "./PathService.js"
 import { makePermissionService, type PermissionServiceShape } from "./PermissionService.js"
 import { makeNotebookFileService, type NotebookFileServiceShape } from "./NotebookFileService.js"
-import { makeDiffService, type DiffServiceShape } from "./DiffService.js"
 import { makeInspectImpl } from "./NotebookInspectService.js"
 import { makeReadImpl, type NotebookReadServiceShape } from "./NotebookReadService.js"
 import { makeEditImpl, type NotebookEditServiceShape } from "./NotebookEditService.js"
@@ -16,43 +16,46 @@ import { makeCleanImpl, type NotebookCleanServiceShape } from "./NotebookCleanSe
 import { makeOutputImpl, type NotebookOutputServiceShape } from "./NotebookOutputService.js"
 import { makeExportImpl, type NotebookExportServiceShape } from "./NotebookExportService.js"
 import { makeExecutionImpl, type NotebookExecutionServiceShape } from "./NotebookExecutionService.js"
-import { makePythonService, makeKernelManager, type PythonServiceShape, type KernelManagerShape } from "./PythonService.js"
+import { makePythonService, type PythonServiceShape } from "./PythonService.js"
+import { makeKernelManager, type KernelManagerShape } from "./KernelManager.js"
 
-export { PathService, type PathServiceShape, type PathEnv, makePathService } from "./PathService.js"
-export { PermissionService, type PermissionServiceShape, type PermissionRequest, type PermissionKind, makePermissionService } from "./PermissionService.js"
-export { NotebookFileService, type NotebookFileServiceShape, makeNotebookFileService } from "./NotebookFileService.js"
-export { DiffService, type DiffServiceShape, makeDiffService } from "./DiffService.js"
-export { NotebookInspectService, makeInspectImpl } from "./NotebookInspectService.js"
-export { NotebookReadService, type NotebookReadServiceShape, makeReadImpl } from "./NotebookReadService.js"
-export { NotebookEditService, type NotebookEditServiceShape, makeEditImpl } from "./NotebookEditService.js"
-export { NotebookCleanService, type NotebookCleanServiceShape, makeCleanImpl } from "./NotebookCleanService.js"
-export { NotebookOutputService, type NotebookOutputServiceShape, makeOutputImpl } from "./NotebookOutputService.js"
-export { NotebookExportService, type NotebookExportServiceShape, makeExportImpl } from "./NotebookExportService.js"
-export { NotebookExecutionService, type NotebookExecutionServiceShape, makeExecutionImpl } from "./NotebookExecutionService.js"
+export { type PathServiceShape, type PathEnv, makePathService } from "./PathService.js"
+export { type PermissionServiceShape, type PermissionRequest, type PermissionKind, makePermissionService } from "./PermissionService.js"
+export { type NotebookFileServiceShape, makeNotebookFileService } from "./NotebookFileService.js"
+export { makeInspectImpl } from "./NotebookInspectService.js"
+export { type NotebookReadServiceShape, makeReadImpl } from "./NotebookReadService.js"
+export { type NotebookEditServiceShape, makeEditImpl } from "./NotebookEditService.js"
+export { type NotebookCleanServiceShape, makeCleanImpl } from "./NotebookCleanService.js"
+export { type NotebookOutputServiceShape, makeOutputImpl } from "./NotebookOutputService.js"
+export { type NotebookExportServiceShape, makeExportImpl } from "./NotebookExportService.js"
+export { type NotebookExecutionServiceShape, makeExecutionImpl } from "./NotebookExecutionService.js"
 export {
-  PythonService,
   type PythonServiceShape,
   type PythonDoctor,
   type PythonProbeResult,
   type DependencyCheck,
   type PythonServiceOptions,
+  makePythonService
+} from "./PythonService.js"
+export {
   type KernelManagerShape,
   type KernelInfo,
   type KernelManagerStats,
   type KernelManagerOptions,
   type KernelRuntimeOptions,
-  makePythonService,
   makeKernelManager
-} from "./PythonService.js"
-export { KernelManager } from "./PythonService.js"
+} from "./KernelManager.js"
 
 export interface NotebookServices {
   readonly path: PathServiceShape
   readonly permission: PermissionServiceShape
   readonly file: NotebookFileServiceShape
-  readonly diff: DiffServiceShape
   readonly python: PythonServiceShape
   readonly kernel: KernelManagerShape
+  /** Interpreter selected from plugin options/env, when configured. */
+  readonly pythonPath: string | undefined
+  /** Invalid pythonPath configuration, surfaced by Python-dependent tools. */
+  readonly pythonPathError: string | undefined
   readonly inspect: ReturnType<typeof makeInspectImpl>
   readonly read: NotebookReadServiceShape
   readonly edit: NotebookEditServiceShape
@@ -62,49 +65,81 @@ export interface NotebookServices {
   readonly execution: NotebookExecutionServiceShape
 }
 
-export interface BuildServicesOptions {
-  readonly pythonPath?: string | undefined
+const sharedPythonServices = new Map<string, PythonServiceShape>()
+
+const getOrCreatePythonService = (opts: {
+  readonly pythonPath: string | undefined
   readonly preferUv: boolean
   readonly helperRelativePath: string
-  readonly warmKernel: boolean
-  readonly defaultTimeoutMs: number
-  readonly directory: string
+  readonly pythonSource?: "options" | "env" | undefined
+}): PythonServiceShape => {
+  const key = JSON.stringify([
+    opts.pythonPath ?? "",
+    opts.preferUv,
+    opts.helperRelativePath,
+    opts.pythonSource ?? ""
+  ])
+  const existing = sharedPythonServices.get(key)
+  if (existing) return existing
+  const service = makePythonService(opts)
+  sharedPythonServices.set(key, service)
+  return service
 }
 
-// Module-level singleton for the kernel manager. The plugin needs the
-// same instance across all tool invocations to share the running kernels,
-// and the dispose hook kills them all at session end.
-let sharedKernelManager: KernelManagerShape | undefined
+// Module-level registry for the kernel managers. The plugin needs the same
+// instance across all tool invocations to share running kernels. Managers are
+// grouped by plugin instance (location) and keyed by runtime configuration, so
+// unloading one project cannot kill another project's kernels.
+const defaultKernelScope = {}
+const sharedKernelManagers = new Map<object, Map<string, KernelManagerShape>>()
 
-const getOrCreateSharedKernelManager = (opts: {
-  readonly pythonPath: string | undefined
-  readonly helperPath: string
-  readonly workingDirectory: string
-  readonly defaultTimeoutMs: number
-}): KernelManagerShape => {
-  if (!sharedKernelManager) {
-    sharedKernelManager = makeKernelManager({
-      pythonPath: opts.pythonPath ?? "python",
-      helperPath: opts.helperPath,
-      workingDirectory: opts.workingDirectory,
-      defaultTimeoutMs: opts.defaultTimeoutMs
-    })
+const getOrCreateSharedKernelManager = (
+  opts: {
+    readonly pythonPath: string | undefined
+    readonly helperPath: string
+    readonly workingDirectory: string
+    readonly defaultTimeoutMs: number
+  },
+  scope?: object
+): KernelManagerShape => {
+  const owner = scope ?? defaultKernelScope
+  let managers = sharedKernelManagers.get(owner)
+  if (!managers) {
+    managers = new Map()
+    sharedKernelManagers.set(owner, managers)
   }
-  return sharedKernelManager
+  const key = JSON.stringify([
+    opts.pythonPath ?? "",
+    opts.helperPath,
+    opts.workingDirectory,
+    opts.defaultTimeoutMs
+  ])
+  const existing = managers.get(key)
+  if (existing) return existing
+  const manager = makeKernelManager({
+    pythonPath: opts.pythonPath ?? "python",
+    helperPath: opts.helperPath,
+    workingDirectory: opts.workingDirectory,
+    defaultTimeoutMs: opts.defaultTimeoutMs
+  })
+  managers.set(key, manager)
+  return manager
 }
 
-export const disposeSharedKernelManager = async (): Promise<void> => {
-  if (!sharedKernelManager) return
-  const svc = sharedKernelManager
-  sharedKernelManager = undefined
-  await Effect.runPromise(svc.disposeAll())
+export const disposeSharedKernelManager = async (scope?: object): Promise<void> => {
+  const owners =
+    scope === undefined ? [...sharedKernelManagers.keys()] : [scope]
+  const managers = owners.flatMap((owner) => {
+    const owned = sharedKernelManagers.get(owner)
+    if (!owned) return []
+    sharedKernelManagers.delete(owner)
+    return [...owned.values()]
+  })
+  await Promise.all(managers.map((manager) => Effect.runPromise(manager.disposeAll())))
 }
 
-export const buildServices = (
-  ctx: ToolContext,
-  options?: Partial<BuildServicesOptions>
-): NotebookServices => {
-  const resolved = resolveOptionsFromEnv()
+export const buildServices = (ctx: ToolContext): NotebookServices => {
+  const resolved = resolveOptionsFromEnv(ctx.pluginOptions)
   const pathSvc: PathServiceShape = makePathService({
     directory: ctx.directory,
     worktree: ctx.worktree,
@@ -112,38 +147,60 @@ export const buildServices = (
     allowOutsideWorktree: resolved.allowOutsideWorktree
   })
   const permissionSvc: PermissionServiceShape = makePermissionService(ctx)
-  const fileSvc: NotebookFileServiceShape = makeNotebookFileService()
-  const diffSvc: DiffServiceShape = makeDiffService()
-  const pythonPath = process.env.OPENCODE_IPYNB_PYTHON ?? resolved.pythonPath
-  const pythonSvc: PythonServiceShape = makePythonService({
+  const fileSvc: NotebookFileServiceShape = makeNotebookFileService(
+    resolved.allowOutsideWorktree ? {} : { worktree: ctx.worktree }
+  )
+  let pythonPath: string | undefined
+  let pythonPathError: string | undefined
+  try {
+    pythonPath = resolvePythonPath(resolved)
+  } catch (error) {
+    pythonPathError =
+      error instanceof Error ? error.message : String(error)
+    pythonPath = undefined
+  }
+  const envPython = process.env.OPENCODE_IPYNB_PYTHON
+  const pythonSource =
+    envPython !== undefined && envPython === pythonPath
+      ? "env"
+      : resolved.pythonPath !== undefined
+        ? "options"
+        : undefined
+  const pythonSvc: PythonServiceShape = getOrCreatePythonService({
     pythonPath,
     preferUv: resolved.preferUv,
-    helperRelativePath: resolved.helperRelativePath
+    helperRelativePath: resolved.helperRelativePath,
+    pythonSource
   })
-  const kernelMgr: KernelManagerShape = getOrCreateSharedKernelManager({
-    pythonPath,
-    helperPath: resolved.helperRelativePath,
-    workingDirectory: ctx.directory,
-    defaultTimeoutMs: resolved.defaultTimeoutMs
-  })
+  const kernelMgr: KernelManagerShape = getOrCreateSharedKernelManager(
+    {
+      pythonPath,
+      helperPath: resolved.helperRelativePath,
+      workingDirectory: ctx.directory,
+      defaultTimeoutMs: resolved.defaultTimeoutMs
+    },
+    ctx.pluginScope
+  )
   const inspectSvc = makeInspectImpl(pathSvc, fileSvc)
   const readSvc = makeReadImpl(pathSvc, fileSvc)
-  const editSvc = makeEditImpl(pathSvc, fileSvc, diffSvc, permissionSvc)
+  const editSvc = makeEditImpl(pathSvc, fileSvc, permissionSvc)
   const cleanSvc = makeCleanImpl(pathSvc, fileSvc, permissionSvc)
   const outputSvc = makeOutputImpl(pathSvc, fileSvc, permissionSvc)
   const exportSvc = makeExportImpl(pathSvc, fileSvc, permissionSvc)
   const executionSvc = makeExecutionImpl(pathSvc, fileSvc, permissionSvc, pythonSvc, {
     kernelManager: kernelMgr,
     warmKernel: resolved.warmKernel,
-    defaultTimeoutMs: resolved.defaultTimeoutMs
+    defaultTimeoutMs: resolved.defaultTimeoutMs,
+    ...(pythonPath === undefined ? {} : { pythonPath })
   })
   return {
     path: pathSvc,
     permission: permissionSvc,
     file: fileSvc,
-    diff: diffSvc,
     python: pythonSvc,
     kernel: kernelMgr,
+    pythonPath,
+    pythonPathError,
     inspect: inspectSvc,
     read: readSvc,
     edit: editSvc,
@@ -154,21 +211,43 @@ export const buildServices = (
   }
 }
 
-const resolveOptionsFromEnv = (): PluginOptions => {
+const parseResolvedOptions = (value: unknown): PluginOptions => {
+  const safe = PluginOptionsSchema.safeParse(value)
+  return safe.success ? safe.data : parsePluginOptions({})
+}
+
+let cachedEnvOptions: { readonly raw: string; readonly value: PluginOptions } | undefined
+const cachedInstanceOptions = new WeakMap<object, PluginOptions>()
+
+const resolveOptionsFromEnv = (instanceOptions?: unknown): PluginOptions => {
   const raw = process.env.OPENCODE_IPYNB_OPTIONS
-  if (!raw) {
-    return parsePluginOptions({})
-  }
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    const safe = PluginOptionsSchema.safeParse(parsed)
-    if (!safe.success) {
-      return parsePluginOptions({})
+  if (raw) {
+    if (cachedEnvOptions?.raw === raw) return cachedEnvOptions.value
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      const safe = PluginOptionsSchema.safeParse(parsed)
+      if (!safe.success) throw new Error("invalid plugin options")
+      cachedEnvOptions = { raw, value: safe.data }
+      return safe.data
+    } catch {
+      // Do not cache an instance-specific fallback under the global raw key:
+      // another project with different instance options would inherit it.
+      return instanceOptions !== undefined && instanceOptions !== null
+        ? parseResolvedOptions(instanceOptions)
+        : parsePluginOptions({})
     }
-    return safe.data
-  } catch {
-    return parsePluginOptions({})
   }
+  if (instanceOptions !== undefined && instanceOptions !== null) {
+    if (typeof instanceOptions === "object") {
+      const cached = cachedInstanceOptions.get(instanceOptions)
+      if (cached) return cached
+      const value = parseResolvedOptions(instanceOptions)
+      cachedInstanceOptions.set(instanceOptions, value)
+      return value
+    }
+    return parseResolvedOptions(instanceOptions)
+  }
+  return parsePluginOptions({})
 }
 
 export { resolveOptionsFromEnv }

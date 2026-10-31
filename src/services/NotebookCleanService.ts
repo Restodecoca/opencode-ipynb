@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Effect } from "effect"
 import {
   NotebookNotFoundError,
   NotebookParseError,
@@ -7,12 +7,14 @@ import {
   PathOutsideWorktreeError,
   PermissionDeniedError
 } from "../domain/errors.js"
-import { NotebookFileService, type NotebookFileServiceShape } from "./NotebookFileService.js"
-import { PathService, type PathServiceShape } from "./PathService.js"
-import { PermissionService, type PermissionServiceShape } from "./PermissionService.js"
+import type { NotebookFileServiceShape } from "./NotebookFileService.js"
+import { assertRevisionUnchanged, contentHash, pinRealPath } from "./revision.js"
+import type { PathServiceShape } from "./PathService.js"
+import {
+  type PermissionServiceShape
+} from "./PermissionService.js"
 import type { CellRaw, CodeCellRaw } from "../domain/cell.js"
 import type { NotebookRaw } from "../domain/notebook.js"
-import { unwrapFiberFailure } from "../utils/fiber.js"
 
 export interface CleanOptions {
   readonly clearOutputs: boolean
@@ -57,11 +59,6 @@ export type CleanError =
   | PathOutsideWorktreeError
   | PermissionDeniedError
 
-export class NotebookCleanService extends Context.Tag("@ipynb/NotebookCleanService")<
-  NotebookCleanService,
-  NotebookCleanServiceShape
->() {}
-
 const defaultOptions: CleanOptions = {
   clearOutputs: true,
   clearExecutionCount: true,
@@ -78,21 +75,17 @@ const normalizeCellSource = <T extends CellRaw>(cell: T): { readonly cell: T; re
   return { cell, changed: false }
 }
 
-const isWidget = (metadata: unknown): boolean => {
-  if (!metadata || typeof metadata !== "object") {
-    return false
-  }
+const hasWidgetState = (metadata: unknown): boolean => {
+  if (!metadata || typeof metadata !== "object") return false
   const m = metadata as Record<string, unknown>
-  if ("jupyter" in m) {
-    const j = m["jupyter"]
-    if (j && typeof j === "object" && "outputs" in (j as Record<string, unknown>)) {
-      const outs = (j as { outputs?: unknown }).outputs
-      if (outs && typeof outs === "object") {
-        return true
-      }
-    }
-  }
-  return false
+  if ("widgets" in m) return true
+  const j = m["jupyter"]
+  return (
+    j !== null &&
+    typeof j === "object" &&
+    ("outputs" in (j as Record<string, unknown>) ||
+      "widgets" in (j as Record<string, unknown>))
+  )
 }
 
 const stripWidget = (metadata: Record<string, unknown>): Record<string, unknown> => {
@@ -102,6 +95,7 @@ const stripWidget = (metadata: Record<string, unknown>): Record<string, unknown>
     if (j && typeof j === "object") {
       const jn = { ...(j as Record<string, unknown>) }
       delete jn["outputs"]
+      delete jn["widgets"]
       next["jupyter"] = jn
     }
   }
@@ -121,11 +115,14 @@ const makeCleanImpl = (
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
       yield* pathSvc.ensureExists(abs)
+      const pinned = yield* pinRealPath(abs)
       return yield* fileSvc
         .withFileLock(
-          abs,
+          pinned,
           Effect.gen(function* () {
-            const notebook = yield* fileSvc.read(abs)
+            const snapshot = yield* fileSvc.readWithText(pinned)
+            const notebook = snapshot.notebook
+            const revision = contentHash(snapshot.text)
             const opts: CleanOptions = { ...defaultOptions, ...(options ?? {}) }
             const displayPath = pathSvc.toDisplay(abs)
 
@@ -142,7 +139,7 @@ const makeCleanImpl = (
               if (normalized.cell.cell_type !== "code") {
                 let touched = normalized.changed
                 let nextCell = normalized.cell
-                if (opts.stripWidgetState && isWidget(nextCell.metadata)) {
+                if (opts.stripWidgetState && hasWidgetState(nextCell.metadata)) {
                   removedWidgets++
                   const newMeta = stripWidget(nextCell.metadata)
                   nextCell = { ...nextCell, metadata: newMeta } as typeof nextCell
@@ -195,7 +192,7 @@ const makeCleanImpl = (
                 newCell.outputs = filtered
               }
 
-              if (opts.stripWidgetState && isWidget(newCell.metadata)) {
+              if (opts.stripWidgetState && hasWidgetState(newCell.metadata)) {
                 removedWidgets++
                 newCell.metadata = stripWidget(newCell.metadata)
                 touched = true
@@ -207,13 +204,47 @@ const makeCleanImpl = (
               return newCell
             })
 
-            const newNotebook: NotebookRaw = { ...notebook, cells }
+            let notebookMetadata = notebook.metadata
+            if (
+              opts.stripWidgetState &&
+              notebookMetadata !== null &&
+              typeof notebookMetadata === "object" &&
+              "widgets" in (notebookMetadata as Record<string, unknown>)
+            ) {
+              removedWidgets++
+              const { widgets: _widgets, ...rest } =
+                notebookMetadata as Record<string, unknown>
+              notebookMetadata = rest as NotebookRaw["metadata"]
+            }
+            const newNotebook: NotebookRaw = {
+              ...notebook,
+              metadata: notebookMetadata,
+              cells
+            }
 
+            if (affected === 0 && removedWidgets === 0) {
+              return {
+                displayPath,
+                absPath: abs,
+                affectedCells: 0,
+                removedOutputs: 0,
+                removedExecutionCounts: 0,
+                removedWidgets: 0,
+                removedImages: 0,
+                notebook
+              }
+            }
+
+            const lexicalPaths = yield* permSvc.aliases(abs)
+            const pinnedPaths = yield* permSvc.aliases(pinned)
+            const permissionPaths = [
+              ...new Set([...lexicalPaths, ...pinnedPaths])
+            ]
             yield* permSvc.ask({
               kind: "edit",
               action: "ipynb_clean",
-              patterns: [abs],
-              always: [abs],
+              patterns: permissionPaths,
+              always: permissionPaths,
               metadata: {
                 filePath: abs,
                 affected,
@@ -225,7 +256,10 @@ const makeCleanImpl = (
               }
             })
 
-            yield* fileSvc.writeAtomic(abs, newNotebook)
+            yield* assertRevisionUnchanged(fileSvc, pinned, revision)
+            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+              noFollowFinal: true
+            })
 
             return {
               displayPath,
@@ -238,9 +272,6 @@ const makeCleanImpl = (
               notebook: newNotebook
             }
           })
-        )
-        .pipe(
-          Effect.mapError(unwrapFiberFailure<CleanError>)
         )
     })
 })

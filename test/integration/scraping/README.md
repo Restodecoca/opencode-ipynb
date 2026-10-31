@@ -26,9 +26,9 @@ library, which the plugin never touches.
 ## Plugin walkthrough
 
 ```text
-ipynb_inspect({ filePath: "examples/scraping/notebook.ipynb" })
-ipynb_read({ filePath: "examples/scraping/notebook.ipynb", cellIndex: 2 })
-ipynb_run({ filePath: "examples/scraping/notebook.ipynb", mode: "all", save: true })
+ipynb_inspect({ filePath: "test/integration/scraping/notebook.ipynb" })
+ipynb_read({ filePath: "test/integration/scraping/notebook.ipynb", cellIndex: 2 })
+ipynb_run({ filePath: "test/integration/scraping/notebook.ipynb", mode: "all", save: true })
 ```
 
 After `ipynb_run` with network access, the printed output is exactly:
@@ -49,7 +49,7 @@ Python and `ipynb_run` captures the print output normally.
 ## Tips
 
 - Use `ipynb_edit({ cellIndex: 2, source: "..." })` to point the fetch at a
-  different small public page; the plugin returns a textual diff so you can
+  different small public page; the plugin returns a concise confirmation so you can
   review the change before accepting it.
 - Use `ipynb_run({ mode: "cell", cellIndex: 2 })` to re-run just the fetch
   cell after editing it, without re-executing the imports.

@@ -1,9 +1,9 @@
 {
   "name": "opencode-ipynb",
-  "version": "0.1.2",
+  "version": "2.0.0",
   "description": "OpenCode community plugin that adds robust .ipynb (Jupyter Notebook) support: inspect, read, edit, run, outputs, clean, export, reproducibility reports, and warm kernels.",
   "type": "module",
-  "packageManager": "bun@1.3.13",
+  "packageManager": "bun@1.4.4",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -11,7 +11,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./lsp": {
+      "types": "./dist/lsp.d.ts",
+      "import": "./dist/lsp.js"
+    },
+    "./rpc": {
+      "types": "./dist/rpc.d.ts",
+      "import": "./dist/rpc.js"
+    },
+    "./server.js": "./server.js"
   },
   "repository": {
     "type": "git",
@@ -23,23 +32,28 @@
   },
   "files": [
     "dist",
+    "server.js",
     "python/ipynb_runner.py",
     "python/requirements.txt",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.4.4"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/index.ts --target=bun --outdir=dist && tsc --emitDeclarationOnly --outDir dist",
+    "typecheck:tests": "tsc -p tsconfig.test.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && bun build src/index.ts --target=bun --outdir=dist --external effect --external \"effect/*\" && bun build src/lsp.ts --target=bun --outdir=dist --external effect --external \"effect/*\" && bun build src/rpc.ts --target=bun --outdir=dist --external effect --external \"effect/*\" && tsc --emitDeclarationOnly --outDir dist",
     "test": "bun test",
     "lint:effect": "tsc --noEmit",
-    "prepare:effect-lsp": "effect-language-service patch"
+    "prepare:effect-lsp": "effect-language-service patch",
+    "prepack": "node -e \"for (const f of ['dist/index.js','dist/index.d.ts','dist/lsp.js','dist/lsp.d.ts','dist/rpc.js','dist/rpc.d.ts']) if (!require('node:fs').existsSync(f)) { console.error(f + ' is missing; run: bun run build'); process.exit(1) }\"",
+    "test:coverage": "bun test --coverage"
   },
   "keywords": [
     "opencode",
@@ -52,18 +66,16 @@
   ],
   "license": "MIT",
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=0.0.0"
+    "@opencode/plugin": "^2.2.2",
+    "effect": "^4.0.0"
   },
-  "dependencies": {
-    "@opencode-ai/plugin": "latest",
-    "diff": "^7.0.0",
-    "effect": "^3.10.0",
-    "zod": "4"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@effect/language-service": "^0.86.2",
-    "@types/bun": "latest",
-    "@types/diff": "7.0.0",
-    "typescript": "^5.6.0"
+    "@effect/language-service": "^0.87.5",
+    "@opencode/plugin": "^2.2.2",
+    "@types/bun": "^1.4.4",
+    "effect": "4.0.6",
+    "typescript": "^5.6.0",
+    "zod": "4"
   }
 }

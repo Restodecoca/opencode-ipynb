@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { formatNotebookAsMarkdown, formatNotebookAsPython, type MarkdownCellInput } from "../../src/format/diff.js"
+import { formatNotebookAsMarkdown, formatNotebookAsPython, type MarkdownCellInput } from "../../src/format/notebook.js"
 
 const cells: ReadonlyArray<MarkdownCellInput> = [
   { cell_type: "markdown", source: "# Title\n\nIntro." },

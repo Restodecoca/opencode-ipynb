@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Effect } from "effect"
 import {
   CellIndexOutOfBoundsError,
   NotebookNotFoundError,
@@ -8,14 +8,18 @@ import {
   PathOutsideWorktreeError,
   PermissionDeniedError
 } from "../domain/errors.js"
-import { NotebookFileService, type NotebookFileServiceShape } from "./NotebookFileService.js"
-import { PathService, type PathServiceShape } from "./PathService.js"
-import { PermissionService, type PermissionServiceShape } from "./PermissionService.js"
+import type { NotebookFileServiceShape } from "./NotebookFileService.js"
+import { assertRevisionUnchanged, contentHash, pinRealPath } from "./revision.js"
+import {
+  DEFAULT_MAX_OUTPUT_CHARS,
+  MAX_READ_RESPONSE_CHARS
+} from "../utils/limits.js"
+import type { PathServiceShape } from "./PathService.js"
+import {
+  type PermissionServiceShape
+} from "./PermissionService.js"
 import { formatOutputs, type OutputFormatOptions } from "../format/outputs.js"
-import { DEFAULT_MAX_OUTPUT_CHARS } from "../utils/limits.js"
 import type { CellRaw, CodeCellRaw } from "../domain/cell.js"
-import { cellSource } from "../domain/notebook.js"
-import { unwrapFiberFailure } from "../utils/fiber.js"
 
 export type OutputOperation = "list" | "read" | "read_error" | "clear_cell" | "clear_all"
 
@@ -89,7 +93,8 @@ export interface NotebookOutputServiceShape {
   >
   readonly readError: (
     filePath: string,
-    cellIndex: number
+    cellIndex: number,
+    maxOutputChars?: number
   ) => Effect.Effect<
     OutputErrorResult,
     | NotebookNotFoundError
@@ -141,11 +146,6 @@ export type ClearAllOutputsError =
   | PathOutsideWorktreeError
   | PermissionDeniedError
 
-export class NotebookOutputService extends Context.Tag("@ipynb/NotebookOutputService")<
-  NotebookOutputService,
-  NotebookOutputServiceShape
->() {}
-
 const baseOpts = (req: Partial<OutputFormatOptions>): OutputFormatOptions => ({
   includeImages: false,
   maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
@@ -165,12 +165,15 @@ const paginate = <T>(
   const effectiveOffset = Math.max(0, Math.floor(offset ?? 0))
   const rawLimit = limit ?? DEFAULT_OUTPUT_LIST_LIMIT
   if (rawLimit <= 0) {
-    const page = effectiveOffset >= total ? [] : entries.slice(effectiveOffset)
+    const page =
+      effectiveOffset >= total
+        ? []
+        : entries.slice(effectiveOffset, effectiveOffset + MAX_OUTPUT_LIST_LIMIT)
     return {
       page,
       total,
       offset: effectiveOffset,
-      limit: Math.max(0, total - effectiveOffset)
+      limit: Math.max(0, Math.min(MAX_OUTPUT_LIST_LIMIT, total - effectiveOffset))
     }
   }
   const effectiveLimit = Math.min(Math.max(1, Math.floor(rawLimit)), MAX_OUTPUT_LIST_LIMIT)
@@ -213,19 +216,19 @@ const makeOutputImpl = (
                   totalBytes += Math.floor((v.length * 3) / 4)
                 }
               } else if (typeof v === "string") {
-                totalBytes += v.length
+                totalBytes += Buffer.byteLength(v, "utf8")
               } else {
-                totalBytes += JSON.stringify(v).length
+                totalBytes += Buffer.byteLength(JSON.stringify(v), "utf8")
               }
             }
           }
           const text = out["text"]
           if (typeof text === "string") {
-            totalBytes += text.length
+            totalBytes += Buffer.byteLength(text, "utf8")
           } else if (Array.isArray(text)) {
             for (const t of text) {
               if (typeof t === "string") {
-                totalBytes += t.length
+                totalBytes += Buffer.byteLength(t, "utf8")
               }
             }
           }
@@ -273,7 +276,19 @@ const makeOutputImpl = (
         }
       }
       const code = cell as CodeCellRaw
-      const rendered = formatOutputs(code, baseOpts({ includeImages: request.includeImages, maxOutputChars: request.maxOutputChars }))
+      const rendered = formatOutputs(
+        code,
+        baseOpts({
+          includeImages: request.includeImages,
+          maxOutputChars: Math.min(
+            request.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS,
+            MAX_READ_RESPONSE_CHARS
+          ),
+          hardCap:
+            (request.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS) >
+            MAX_READ_RESPONSE_CHARS
+        })
+      )
       return {
         displayPath: pathSvc.toDisplay(abs),
         cellIndex: idx,
@@ -281,7 +296,7 @@ const makeOutputImpl = (
         outputCount: code.outputs.length
       }
     }),
-  readError: (filePath, cellIndex) =>
+  readError: (filePath, cellIndex, maxOutputChars) =>
     Effect.gen(function* () {
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
@@ -314,7 +329,18 @@ const makeOutputImpl = (
           rendered: "(no error in this cell)"
         }
       }
-      const rendered = formatOutputs({ ...code, outputs: errors }, baseOpts({ maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS }))
+      const rendered = formatOutputs(
+        { ...code, outputs: errors },
+        baseOpts({
+          maxOutputChars: Math.min(
+            maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS,
+            MAX_READ_RESPONSE_CHARS
+          ),
+          hardCap:
+            (maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS) >
+            MAX_READ_RESPONSE_CHARS
+        })
+      )
       return {
         displayPath: pathSvc.toDisplay(abs),
         cellIndex,
@@ -327,11 +353,14 @@ const makeOutputImpl = (
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
       yield* pathSvc.ensureExists(abs)
+      const pinned = yield* pinRealPath(abs)
       return yield* fileSvc
         .withFileLock(
-          abs,
+          pinned,
           Effect.gen(function* () {
-            const notebook = yield* fileSvc.read(abs)
+            const snapshot = yield* fileSvc.readWithText(pinned)
+            const notebook = snapshot.notebook
+            const revision = contentHash(snapshot.text)
             if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
               return yield* new CellIndexOutOfBoundsError({
                 message: `requested cell ${cellIndex} but notebook has ${notebook.cells.length} cells`,
@@ -353,11 +382,25 @@ const makeOutputImpl = (
             const code = cell as CodeCellRaw
             const removedOutputs = code.outputs.length
             const removedExec = code.execution_count !== null ? 1 : 0
+            if (removedOutputs === 0 && removedExec === 0) {
+              return {
+                displayPath: pathSvc.toDisplay(abs),
+                absPath: abs,
+                clearedCells: 0,
+                removedOutputs: 0,
+                removedExecutionCounts: 0
+              }
+            }
+            const lexicalPaths = yield* permSvc.aliases(abs)
+            const pinnedPaths = yield* permSvc.aliases(pinned)
+            const permissionPaths = [
+              ...new Set([...lexicalPaths, ...pinnedPaths])
+            ]
             yield* permSvc.ask({
               kind: "edit",
               action: "ipynb_outputs_clear_cell",
-              patterns: [abs],
-              always: [abs],
+              patterns: permissionPaths,
+              always: permissionPaths,
               metadata: {
                 filePath: abs,
                 cellIndex,
@@ -369,7 +412,10 @@ const makeOutputImpl = (
             const cells = notebook.cells.slice()
             cells[cellIndex] = newCell
             const newNotebook = { ...notebook, cells }
-            yield* fileSvc.writeAtomic(abs, newNotebook)
+            yield* assertRevisionUnchanged(fileSvc, pinned, revision)
+            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+              noFollowFinal: true
+            })
             return {
               displayPath: pathSvc.toDisplay(abs),
               absPath: abs,
@@ -379,20 +425,20 @@ const makeOutputImpl = (
             }
           })
         )
-        .pipe(
-          Effect.mapError(unwrapFiberFailure<ClearCellOutputsError>)
-        )
     }),
   clearAllOutputs: (filePath) =>
     Effect.gen(function* () {
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
       yield* pathSvc.ensureExists(abs)
+      const pinned = yield* pinRealPath(abs)
       return yield* fileSvc
         .withFileLock(
-          abs,
+          pinned,
           Effect.gen(function* () {
-            const notebook = yield* fileSvc.read(abs)
+            const snapshot = yield* fileSvc.readWithText(pinned)
+            const notebook = snapshot.notebook
+            const revision = contentHash(snapshot.text)
             let cleared = 0
             let removedOutputs = 0
             let removedExec = 0
@@ -411,11 +457,25 @@ const makeOutputImpl = (
               }
               return { ...code, outputs: [], execution_count: null }
             })
+            if (cleared === 0) {
+              return {
+                displayPath: pathSvc.toDisplay(abs),
+                absPath: abs,
+                clearedCells: 0,
+                removedOutputs: 0,
+                removedExecutionCounts: 0
+              }
+            }
+            const lexicalPaths = yield* permSvc.aliases(abs)
+            const pinnedPaths = yield* permSvc.aliases(pinned)
+            const permissionPaths = [
+              ...new Set([...lexicalPaths, ...pinnedPaths])
+            ]
             yield* permSvc.ask({
               kind: "edit",
               action: "ipynb_outputs_clear_all",
-              patterns: [abs],
-              always: [abs],
+              patterns: permissionPaths,
+              always: permissionPaths,
               metadata: {
                 filePath: abs,
                 cleared,
@@ -424,7 +484,10 @@ const makeOutputImpl = (
               }
             })
             const newNotebook = { ...notebook, cells }
-            yield* fileSvc.writeAtomic(abs, newNotebook)
+            yield* assertRevisionUnchanged(fileSvc, pinned, revision)
+            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+              noFollowFinal: true
+            })
             return {
               displayPath: pathSvc.toDisplay(abs),
               absPath: abs,
@@ -434,12 +497,8 @@ const makeOutputImpl = (
             }
           })
         )
-        .pipe(
-          Effect.mapError(unwrapFiberFailure<ClearAllOutputsError>)
-        )
     })
   }
 }
 
 export { makeOutputImpl }
-export { cellSource }

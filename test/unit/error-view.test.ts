@@ -80,7 +80,7 @@ describe("formatOutputs > error view", () => {
     const cell = makeErrorCell(longTrace.split("\n"))
     const out = formatOutputs(cell, { maxTracebackChars: 200 })
     expect(out).toContain("truncated")
-    expect(out).toContain("maxTracebackChars")
+    expect(out).toContain("hard response limit")
   })
 
   it("shows the full traceback when includeFullTraceback is true", () => {

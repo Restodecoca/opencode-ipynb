@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { Effect } from "effect"
+import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { makePathService } from "../../src/services/PathService.js"
-import { parsePluginOptions, type PluginOptions } from "../../src/plugin-options.js"
+import { parsePluginOptions, resolvePythonPath, type PluginOptions } from "../../src/plugin-options.js"
 import { resolveToolOptions } from "../../src/tools/_resolveOptions.js"
+import { resolveOptionsFromEnv } from "../../src/services/index.js"
 
 const ENV_VAR = "OPENCODE_IPYNB_OPTIONS"
 const ORIGINAL_ENV = process.env[ENV_VAR]
@@ -116,6 +119,43 @@ describe("resolveToolOptions", () => {
     expect(opts.defaultMaxOutputChars).toBe(6_000)
     expect(opts.allowOutsideWorktree).toBeUndefined()
   })
+
+  it("falls back to instance options when the env schema is invalid", () => {
+    setEnv('{"defaultTimeoutMs":-1}')
+    const first = resolveOptionsFromEnv({ pythonPath: "/opt/python-a" })
+    const second = resolveOptionsFromEnv({ pythonPath: "/opt/python-b" })
+    expect(first.pythonPath).toBe("/opt/python-a")
+    expect(second.pythonPath).toBe("/opt/python-b")
+  })
+
+  it("does not leak one instance's fallback when the env var is invalid", () => {
+    setEnv("not-valid-json-{")
+    const first = resolveOptionsFromEnv({ defaultMaxOutputChars: 1_111 })
+    const second = resolveOptionsFromEnv({ defaultMaxOutputChars: 2_222 })
+    expect(first.defaultMaxOutputChars).toBe(1_111)
+    expect(second.defaultMaxOutputChars).toBe(2_222)
+  })
+})
+
+describe("resolvePythonPath", () => {
+  const original = process.env.OPENCODE_IPYNB_PYTHON
+  afterEach(() => {
+    if (original === undefined) delete process.env.OPENCODE_IPYNB_PYTHON
+    else process.env.OPENCODE_IPYNB_PYTHON = original
+  })
+
+  const realPython = fs.realpathSync(process.execPath)
+  const otherReal = fs.realpathSync("/bin/sh")
+
+  it("lets OPENCODE_IPYNB_PYTHON win over the plugin option", () => {
+    process.env.OPENCODE_IPYNB_PYTHON = realPython
+    expect(resolvePythonPath({ pythonPath: otherReal })).toBe(realPython)
+  })
+
+  it("falls back to the plugin option when the env var is absent", () => {
+    delete process.env.OPENCODE_IPYNB_PYTHON
+    expect(resolvePythonPath({ pythonPath: otherReal })).toBe(otherReal)
+  })
 })
 
 describe("PathService with allowOutsideWorktree", () => {
@@ -156,4 +196,36 @@ describe("PathService with allowOutsideWorktree", () => {
     const result = await Effect.runPromise(pathSvc.ensureInsideWorktree(inside))
     expect(result).toBeUndefined()
   })
+  it("rejects relative path-like pythonPath values", () => {
+    const previous = process.env.OPENCODE_IPYNB_PYTHON
+    delete process.env.OPENCODE_IPYNB_PYTHON
+    try {
+      expect(() => resolvePythonPath({ pythonPath: "./python" })).toThrow()
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-resolve-"))
+      const absolute = path.join(dir, "python")
+      fs.writeFileSync(absolute, "")
+      fs.chmodSync(absolute, 0o755)
+      try {
+        expect(resolvePythonPath({ pythonPath: absolute })).toBe(absolute)
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+      const bin = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-path-"))
+      const fakePython = path.join(bin, process.platform === "win32" ? "python.exe" : "python")
+      fs.writeFileSync(fakePython, "")
+      fs.chmodSync(fakePython, 0o755)
+      const previousPath = process.env.PATH
+      process.env.PATH = bin
+      try {
+        const bare = resolvePythonPath({ pythonPath: "python" })
+        expect(bare).toBe(fakePython)
+      } finally {
+        process.env.PATH = previousPath
+        fs.rmSync(bin, { recursive: true, force: true })
+      }
+    } finally {
+      if (previous !== undefined) process.env.OPENCODE_IPYNB_PYTHON = previous
+    }
+  })
+
 })

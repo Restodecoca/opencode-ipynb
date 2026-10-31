@@ -1,11 +1,39 @@
-import { spawn, type ChildProcess } from "node:child_process"
+import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
-import * as readline from "node:readline"
-import { Effect, Context } from "effect"
-import { PythonRunnerError, type NotebookError } from "../domain/errors.js"
-import { RunResponseSchema, type RunRequest, type RunResponse } from "../domain/execution.js"
+import { Effect } from "effect"
+import { PermissionDeniedError } from "../domain/errors.js"
+
+const HELPER_ENV_KEYS = [
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "PYTHONSTARTUP",
+  "PYTHONINSPECT"
+] as const
+
+/**
+ * Environment for the Python helper process. The helper runs first-party
+ * code and imports stdlib/nbclient modules before it can trust the request,
+ * so project-controlled PYTHONPATH/PYTHONHOME values must not reach it.
+ * Notebook kernels get the original values back through `kernelEnv`.
+ */
+export const helperSpawnEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env }
+  for (const key of HELPER_ENV_KEYS) delete env[key]
+  return env
+}
+
+/** Original Python env values to restore only inside the notebook kernel. */
+export const kernelEnvOverrides = (): Record<string, string> | undefined => {
+  const out: Record<string, string> = {}
+  for (const key of HELPER_ENV_KEYS) {
+    const value = process.env[key]
+    if (typeof value === "string") out[key] = value
+  }
+  return Object.keys(out).length === 0 ? undefined : out
+}
 
 export interface PythonProbeResult {
   readonly pythonPath: string
@@ -33,6 +61,7 @@ export interface PythonServiceOptions {
   readonly pythonPath: string | undefined
   readonly preferUv: boolean
   readonly helperRelativePath: string
+  readonly pythonSource?: "options" | "env" | undefined
 }
 
 export interface PythonServiceShape {
@@ -45,8 +74,18 @@ export interface PythonServiceShape {
     pythonPath: string,
     module: string
   ) => Effect.Effect<DependencyCheck, never>
+  /** Batch variant: one Python process for many imports. */
+  readonly checkImports?: (
+    pythonPath: string,
+    modules: ReadonlyArray<string>,
+    signal?: AbortSignal
+  ) => Effect.Effect<ReadonlyArray<DependencyCheck>, never>
   readonly findHelper: () => Effect.Effect<string | undefined, never>
-  readonly doctor: () => Effect.Effect<PythonDoctor, never>
+  readonly doctor: (
+    beforeDependencies?: (
+      selected: PythonProbeResult
+    ) => Effect.Effect<void, PermissionDeniedError>
+  ) => Effect.Effect<PythonDoctor, PermissionDeniedError>
 }
 
 // Test-only surface: cache invalidation is an implementation detail of the
@@ -56,27 +95,63 @@ export interface _PythonServiceForTest {
   readonly _invalidateDepsCache: (pythonPath?: string) => void
 }
 
-export class PythonService extends Context.Tag("@ipynb/PythonService")<
-  PythonService,
-  PythonServiceShape
->() {}
-
+const MAX_PROBE_STDOUT_BYTES = 8 * 1024 * 1024
 const PROBE_TIMEOUT_MS = 4_000
 const REQUIRED_DEPS = ["nbformat", "nbclient", "jupyter_client", "ipykernel"] as const
 
+const probeEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env }
+  // Isolated probes must not execute project-local modules through
+  // PYTHONPATH or the current directory.
+  delete env.PYTHONPATH
+  delete env.PYTHONHOME
+  return env
+}
+
 const probeOnce = (executable: string): Promise<PythonProbeResult | null> =>
   new Promise((resolve) => {
-    const child = spawn(executable, ["-c", "import sys; print(sys.executable); print(sys.version.split()[0])"], {
-      stdio: ["ignore", "pipe", "pipe"]
-    })
+    const child = spawn(
+      executable,
+      ["-E", "-c", "import sys; print(sys.executable); print(sys.version.split()[0])"],
+      {
+        cwd: os.tmpdir(),
+        env: probeEnv(),
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    )
     const stdoutChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    const kill = (): void => {
+      if (child.pid === undefined) return
+      if (process.platform === "win32") {
+        child.kill("SIGKILL")
+      } else {
+        try {
+          process.kill(-child.pid, "SIGKILL")
+        } catch {
+          child.kill("SIGKILL")
+        }
+      }
+    }
     const timer = setTimeout(() => {
-      child.kill("SIGKILL")
+      kill()
       resolve(null)
     }, PROBE_TIMEOUT_MS)
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk))
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk))
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutBytes >= MAX_PROBE_STDOUT_BYTES) return
+      const take = chunk.subarray(0, MAX_PROBE_STDOUT_BYTES - stdoutBytes)
+      stdoutBytes += take.length
+      stdoutChunks.push(take)
+    })
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes >= 4_000) return
+      const take = chunk.subarray(0, 4_000 - stderrBytes)
+      stderrBytes += take.length
+      stderrChunks.push(take)
+    })
     child.on("error", () => {
       clearTimeout(timer)
       resolve(null)
@@ -108,17 +183,63 @@ const checkImport = (pythonPath: string, module: string): Promise<DependencyChec
   new Promise((resolve) => {
     const child = spawn(
       pythonPath,
-      ["-c", `import importlib, sys; m = importlib.import_module(${JSON.stringify(module)}); print(getattr(m, "__version__", "ok"))`],
-      { stdio: ["ignore", "pipe", "pipe"] }
+      [
+        "-E",
+        "-c",
+        `import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import importlib.util, importlib.metadata
+root = ${JSON.stringify(module)}.split(".")[0]
+try:
+    spec = importlib.util.find_spec(root)
+except Exception:
+    spec = None
+if spec is None:
+    raise SystemExit(1)
+try:
+    print(importlib.metadata.version(${JSON.stringify(module)}))
+except Exception:
+    print("ok")`
+      ],
+      {
+        cwd: os.tmpdir(),
+        env: probeEnv(),
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"]
+      }
     )
     const stdoutChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    const kill = (): void => {
+      if (child.pid === undefined) return
+      if (process.platform === "win32") {
+        child.kill("SIGKILL")
+      } else {
+        try {
+          process.kill(-child.pid, "SIGKILL")
+        } catch {
+          child.kill("SIGKILL")
+        }
+      }
+    }
     const timer = setTimeout(() => {
-      child.kill("SIGKILL")
+      kill()
       resolve({ name: module, available: false, detail: "timeout" })
     }, PROBE_TIMEOUT_MS)
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk))
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk))
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutBytes >= MAX_PROBE_STDOUT_BYTES) return
+      const take = chunk.subarray(0, MAX_PROBE_STDOUT_BYTES - stdoutBytes)
+      stdoutBytes += take.length
+      stdoutChunks.push(take)
+    })
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes >= 4_000) return
+      const take = chunk.subarray(0, 4_000 - stderrBytes)
+      stderrBytes += take.length
+      stderrChunks.push(take)
+    })
     child.on("error", (err) => {
       clearTimeout(timer)
       resolve({ name: module, available: false, detail: err.message })
@@ -135,17 +256,306 @@ const checkImport = (pythonPath: string, module: string): Promise<DependencyChec
     })
   })
 
+
+const checkImportsChunk = (
+  pythonPath: string,
+  modules: ReadonlyArray<string>,
+  signal?: AbortSignal
+): Promise<ReadonlyArray<DependencyCheck>> =>
+  new Promise((resolve) => {
+    if (modules.length === 0) {
+      resolve([])
+      return
+    }
+    const roots = [...new Set(modules.map((m) => m.split(".")[0]!))]
+    if (signal?.aborted) {
+      resolve(roots.map((name) => ({ name, available: false, detail: "aborted" })))
+      return
+    }
+    const child = spawn(
+      pythonPath,
+      [
+        "-E",
+        "-c",
+        `import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import os, json, importlib.util, importlib.metadata
+out = {}
+for root in json.loads(os.environ.get("OPENCODE_IPYNB_MODULES", "[]")):
+    try:
+        spec = importlib.util.find_spec(root)
+    except Exception:
+        spec = None
+    if spec is None:
+        out[root] = {"available": False, "detail": "not found"}
+        continue
+    try:
+        out[root] = {"available": True, "detail": importlib.metadata.version(root)}
+    except Exception:
+        out[root] = {"available": True, "detail": "ok"}
+print(json.dumps(out))`
+      ],
+      {
+        cwd: os.tmpdir(),
+        env: { ...probeEnv(), OPENCODE_IPYNB_MODULES: JSON.stringify(roots) },
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    )
+    const stdoutChunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    const kill = (): void => {
+      if (child.pid === undefined) return
+      if (process.platform === "win32") {
+        child.kill("SIGKILL")
+      } else {
+        try {
+          process.kill(-child.pid, "SIGKILL")
+        } catch {
+          child.kill("SIGKILL")
+        }
+      }
+    }
+    const unavailable = (detail: string): ReadonlyArray<DependencyCheck> =>
+      roots.map((name) => ({ name, available: false, detail }))
+    const timeoutMs = Math.min(
+      30_000,
+      PROBE_TIMEOUT_MS + roots.length * 100
+    )
+    const timer = setTimeout(() => {
+      kill()
+      resolve(unavailable("timeout"))
+    }, timeoutMs)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      kill()
+      resolve(unavailable("aborted"))
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutBytes >= MAX_PROBE_STDOUT_BYTES) return
+      const take = chunk.subarray(0, MAX_PROBE_STDOUT_BYTES - stdoutBytes)
+      stdoutBytes += take.length
+      stdoutChunks.push(take)
+    })
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes >= 4_000) return
+      const take = chunk.subarray(0, 4_000 - stderrBytes)
+      stderrBytes += take.length
+      stderrChunks.push(take)
+    })
+    child.on("error", (err) => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+      resolve(unavailable(err.message))
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+      if (code !== 0) {
+        const detail =
+          Buffer.concat(stderrChunks).toString("utf8").trim().split("\n").slice(-1)[0] ??
+          "missing"
+        resolve(unavailable(detail))
+        return
+      }
+      try {
+        const parsed = JSON.parse(
+          Buffer.concat(stdoutChunks).toString("utf8").trim()
+        ) as Record<string, { available?: boolean; detail?: unknown }>
+        resolve(
+          roots.map((name) => ({
+            name,
+            available: parsed[name]?.available === true,
+            detail:
+              typeof parsed[name]?.detail === "string"
+                ? String(parsed[name]!.detail)
+                : "ok"
+          }))
+        )
+      } catch {
+        resolve(unavailable("invalid output"))
+      }
+    })
+  })
+
+const IMPORTS_BATCH_SIZE = 128
+
+/**
+ * Check many imports without exceeding platform environment/argv limits.
+ * Roots are deduplicated and sent in bounded chunks, preserving input order.
+ */
+const checkImportsBatch = async (
+  pythonPath: string,
+  modules: ReadonlyArray<string>,
+  signal?: AbortSignal
+): Promise<ReadonlyArray<DependencyCheck>> => {
+  const roots = [...new Set(modules.map((m) => m.split(".")[0]!))]
+  const checks: DependencyCheck[] = []
+  const tooLong: DependencyCheck[] = roots
+    .filter((name) => name.length > 256)
+    .map((name) => ({
+      name,
+      available: false,
+      detail: "module name is too long"
+    }))
+  checks.push(...tooLong)
+  const usable = roots.filter((name) => name.length <= 256)
+  // Windows caps the whole environment block at 32767 chars; stay well
+  // below it because inherited variables also count.
+  const envBudget = process.platform === "win32" ? 16_000 : 60_000
+  const chunks: string[][] = []
+  let current: string[] = []
+  let currentBytes = 2
+  for (const name of usable) {
+    const size = JSON.stringify(name).length + 3
+    if (
+      current.length > 0 &&
+      (current.length >= IMPORTS_BATCH_SIZE ||
+        currentBytes + size > envBudget)
+    ) {
+      chunks.push(current)
+      current = []
+      currentBytes = 2
+    }
+    current.push(name)
+    currentBytes += size
+  }
+  if (current.length > 0) chunks.push(current)
+  for (const chunk of chunks) {
+    if (signal?.aborted) break
+    try {
+      checks.push(...(await checkImportsChunk(pythonPath, chunk, signal)))
+    } catch (error) {
+      checks.push(
+        ...chunk.map((name) => ({
+          name,
+          available: false,
+          detail: `spawn failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        }))
+      )
+    }
+  }
+  const byName = new Map(checks.map((check) => [check.name, check]))
+  return roots.map(
+    (name) =>
+      byName.get(name) ?? {
+        name,
+        available: false,
+        detail: signal?.aborted === true ? "aborted" : "not checked"
+      }
+  )
+}
+
+/**
+ * Absolute PATH candidates for the Python names the plugin probes. Resolving
+ * them without executing lets the first shell assert cover the interpreter a
+ * PATH lookup will actually spawn.
+ */
+export const pythonInterpreterResources = (
+  configured?: string
+): ReadonlyArray<string> => {
+  const names =
+    process.platform === "win32"
+      ? ["python.exe", "python3.exe"]
+      : ["python", "python3"]
+  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)
+  const out = new Set<string>()
+  const add = (candidate: string): boolean => {
+    try {
+      if (!fs.statSync(candidate).isFile()) return false
+    } catch {
+      return false
+    }
+    out.add(candidate)
+    try {
+      out.add(fs.realpathSync(candidate))
+    } catch {
+      // missing / dangling
+    }
+    return true
+  }
+  if (configured !== undefined && configured.length > 0) {
+    // An explicit interpreter wins: do not enumerate unused PATH Python
+    // installations or a deny on one of them blocks a safe configuration.
+    if (path.isAbsolute(configured)) {
+      add(configured)
+    } else {
+      // A bare name is resolved through PATH; assert the absolute target,
+      // not just the literal string. Windows shims usually carry .exe.
+      const configuredNames =
+        process.platform === "win32" && !configured.endsWith(".exe")
+          ? [configured, `${configured}.exe`]
+          : [configured]
+      outer: for (const name of configuredNames) {
+        for (const dir of dirs) {
+          if (!path.isAbsolute(dir)) continue
+          const candidate = path.join(dir, name)
+          try {
+            fs.accessSync(candidate, fs.constants.X_OK)
+            if (add(candidate)) break outer
+          } catch {
+            // keep looking
+          }
+        }
+      }
+    }
+    return [...out]
+  }
+  // The probe tries `python` first and only falls back to `python3` when it
+  // is absent. Asserting both up front over-blocks when the unused fallback
+  // is denied, so include only the first name that resolves.
+  for (const name of names) {
+    let found = false
+    for (const dir of dirs) {
+      if (!path.isAbsolute(dir)) continue
+      const candidate = path.join(dir, name)
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK)
+        if (add(candidate)) {
+          found = true
+          break
+        }
+      } catch {
+        // not executable / missing
+      }
+    }
+    if (found) break
+  }
+  return [...out]
+}
+
+/** Back-compat: realpath-resolved PATH candidates only. */
+export const pathPythonCandidates = (): ReadonlyArray<string> =>
+  pythonInterpreterResources().filter((value) => {
+    try {
+      return fs.realpathSync(value) === value
+    } catch {
+      return false
+    }
+  })
+
 const __filename = fileURLToPath(import.meta.url)
 
 let findHelperWarned = false
 
 const findHelper = (rel: string): string | undefined => {
   const candidates: string[] = []
-  if (process.cwd()) candidates.push(path.resolve(process.cwd(), rel))
-  const distDir = path.dirname(__filename)
-  candidates.push(path.resolve(distDir, "..", "..", rel))
-  candidates.push(path.resolve(distDir, "..", "..", "..", rel))
-  candidates.push(path.resolve(distDir, "..", rel))
+  if (path.isAbsolute(rel)) {
+    candidates.push(rel)
+  } else {
+    const distDir = path.dirname(__filename)
+    // dist/index.js -> package root; src/services/*.ts -> repository root.
+    candidates.push(
+      path.basename(distDir) === "dist"
+        ? path.resolve(distDir, "..", rel)
+        : path.resolve(distDir, "..", "..", rel)
+    )
+  }
   for (const c of candidates) {
     if (fs.existsSync(c)) return c
   }
@@ -171,7 +581,7 @@ const buildSuggestions = (
   const out: string[] = []
   if (!doctor.selected) {
     out.push(
-      "No working Python interpreter was found. Set `ipynb.pythonPath` in opencode.json or `OPENCODE_IPYNB_PYTHON` env, or install Python on PATH."
+      "No working Python interpreter was found. Set the plugin `pythonPath` option or `OPENCODE_IPYNB_PYTHON` env, or install Python on PATH."
     )
   }
   if (doctor.selected) {
@@ -203,47 +613,109 @@ const makePythonImpl = (
   opts: PythonServiceOptions
 ): PythonServiceShape & _PythonServiceForTest => {
   const candidates: PythonProbeResult[] = []
-  const probeAll = async (): Promise<PythonProbeResult[]> => {
-    const list: PythonProbeResult[] = []
-    if (opts.pythonPath) {
-      const explicit = await probeWithFrom(opts.pythonPath, "options")
-      if (explicit) list.push(explicit)
+  const selectedSpecs = (): Array<{
+    readonly executable: string
+    readonly from: PythonProbeResult["from"]
+  }> => {
+    const configured = opts.pythonPath
+    if (configured !== undefined && configured.length > 0) {
+      if (path.isAbsolute(configured)) {
+        return [{ executable: configured, from: opts.pythonSource ?? "options" }]
+      }
+      if (/[\\/]/.test(configured)) return []
+      const resolved = pythonInterpreterResources(configured)[0]
+      return resolved === undefined
+        ? []
+        : [{ executable: resolved, from: opts.pythonSource ?? "options" }]
     }
-    const envPy = process.env.OPENCODE_IPYNB_PYTHON
-    if (envPy && envPy !== opts.pythonPath) {
-      const env = await probeWithFrom(envPy, "env")
-      if (env) list.push(env)
-    }
-    for (const exe of ["python", "python3"]) {
-      const r = await probeWithFrom(exe, exe === "python" ? "path-python" : "path-python3")
-      if (r) list.push(r)
-    }
-    return list
+    const first = pythonInterpreterResources()[0]
+    if (first === undefined) return []
+    const name = path.basename(first).toLowerCase()
+    return [
+      {
+        executable: first,
+        from: name.startsWith("python3")
+          ? "path-python3"
+          : "path-python"
+      }
+    ]
   }
+
+  const probeAll = async (): Promise<PythonProbeResult[]> => {
+    const specs = selectedSpecs()
+    const list = (
+      await Promise.all(
+        specs.map((spec) => probeWithFrom(spec.executable, spec.from))
+      )
+    ).filter((item): item is PythonProbeResult => item !== null)
+    // The configured interpreter can also be the first `python` on PATH.
+    // Keep the higher-priority source and avoid duplicate doctor entries.
+    const seen = new Set<string>()
+    return list.filter((item) => {
+      const key = path.resolve(item.executable)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }
+
+  // Probe cache: finding an interpreter spawns up to four subprocesses.
+  // A short TTL keeps repeated tool calls cheap without hiding a newly
+  // installed Python forever.
+  const PROBE_TTL_MS = 60_000
+  let candidatesCheckedAt = 0
+  let probed = false
+  let selectedProbe: PythonProbeResult | undefined
+  let selectedCheckedAt = 0
+  let selectedProbed = false
 
   const probe = (): Effect.Effect<PythonProbeResult, never> =>
     Effect.gen(function* () {
-      if (candidates.length === 0) {
-        const fresh = yield* Effect.promise(() => probeAll())
-        candidates.push(...fresh)
+      const now = Date.now()
+      // Fresh candidates (doctor/allCandidates) win over a previously cached
+      // probe, so a newly installed interpreter is picked up immediately.
+      if (
+        probed &&
+        candidates.length > 0 &&
+        now - candidatesCheckedAt < PROBE_TTL_MS
+      ) {
+        selectedProbe = candidates[0]!
+        selectedCheckedAt = now
+        selectedProbed = true
+        return selectedProbe
       }
-      const first = candidates[0]
-      if (!first) {
-        return {
-          pythonPath: opts.pythonPath ?? "python",
-          version: "unknown",
-          executable: opts.pythonPath ?? "python",
-          from: "none"
+      if (selectedProbed && now - selectedCheckedAt < PROBE_TTL_MS) {
+        return selectedProbe!
+      }
+      for (const attempt of selectedSpecs()) {
+        const found = yield* Effect.promise(() =>
+          probeWithFrom(attempt.executable, attempt.from)
+        )
+        if (found) {
+          selectedProbe = found
+          selectedCheckedAt = Date.now()
+          selectedProbed = true
+          return found
         }
       }
-      return first
+      selectedProbe = {
+        pythonPath: opts.pythonPath ?? "python",
+        version: "unknown",
+        executable: opts.pythonPath ?? "python",
+        from: "none"
+      }
+      selectedCheckedAt = Date.now()
+      selectedProbed = true
+      return selectedProbe
     })
-
   const allCandidates = (): Effect.Effect<ReadonlyArray<PythonProbeResult>, never> =>
     Effect.gen(function* () {
-      if (candidates.length === 0) {
+      if (!probed || Date.now() - candidatesCheckedAt >= PROBE_TTL_MS) {
+        candidates.length = 0
         const fresh = yield* Effect.promise(() => probeAll())
         candidates.push(...fresh)
+        candidatesCheckedAt = Date.now()
+        probed = true
       }
       return candidates
     })
@@ -274,10 +746,17 @@ const makePythonImpl = (
   const findHelperEff = (): Effect.Effect<string | undefined, never> =>
     Effect.sync(() => findHelper(opts.helperRelativePath))
 
-  const doctor = (): Effect.Effect<PythonDoctor, never> =>
+  const doctor = (
+    beforeDependencies?: (
+      selected: PythonProbeResult
+    ) => Effect.Effect<void, PermissionDeniedError>
+  ): Effect.Effect<PythonDoctor, PermissionDeniedError> =>
     Effect.gen(function* () {
       const cands = yield* allCandidates()
       const selected = cands[0]
+      if (selected !== undefined && beforeDependencies !== undefined) {
+        yield* beforeDependencies(selected)
+      }
       const deps = selected
         ? yield* checkDeps(selected.pythonPath)
         : (REQUIRED_DEPS.map((name) => ({ name, available: false, detail: "no python selected" })) as ReadonlyArray<DependencyCheck>)
@@ -297,6 +776,8 @@ const makePythonImpl = (
     candidates: allCandidates,
     checkDependencies: checkDeps,
     checkImport: (pythonPath, module) => Effect.promise(() => checkImport(pythonPath, module)),
+    checkImports: (pythonPath, modules, signal) =>
+      Effect.promise(() => checkImportsBatch(pythonPath, modules, signal)),
     findHelper: findHelperEff,
     doctor,
     _invalidateDepsCache: (pythonPath?: string) => {
@@ -313,626 +794,3 @@ export const makePythonService = (opts: PythonServiceOptions): PythonServiceShap
   makePythonImpl(opts)
 
 export { REQUIRED_DEPS, findHelper }
-
-// ---------------------------------------------------------------------------
-// v1.0 — KernelManager: long-lived Python subprocess per notebook path.
-// ---------------------------------------------------------------------------
-
-export interface KernelManagerOptions {
-  readonly pythonPath: string
-  readonly helperPath: string
-  readonly workingDirectory: string | undefined
-  readonly defaultTimeoutMs: number
-}
-
-export interface KernelRuntimeOptions {
-  readonly pythonPath: string
-  readonly helperPath: string
-}
-
-export interface KernelInfo {
-  readonly filePath: string
-  readonly pid: number
-  readonly lastUsedAt: number
-  readonly requestsHandled: number
-  readonly stderrTail: string
-}
-
-export interface KernelManagerStats {
-  readonly liveKernels: number
-  readonly totalRequests: number
-}
-
-interface PendingRequest {
-  resolve: (response: RunResponse) => void
-  reject: (err: PythonRunnerError) => void
-  timer: NodeJS.Timeout
-  cleanup?: () => void
-}
-
-interface KernelState {
-  proc: ChildProcess
-  filePath: string
-  pythonPath: string
-  helperPath: string
-  pid: number
-  nextId: number
-  pending: Map<number, PendingRequest>
-  readyPromise: Promise<void>
-  resolveReady: () => void
-  rejectReady: (err: PythonRunnerError) => void
-  readyResolved: boolean
-  lastUsed: number
-  requestsHandled: number
-  stderrTail: string[]
-  alive: boolean
-  startedAt: number
-  shutdownRequestId: number | undefined
-}
-
-const STDERR_TAIL_MAX = 20
-
-interface Deferred<A, E> {
-  readonly promise: Promise<A>
-  readonly resolve: (a: A) => void
-  readonly reject: (e: E) => void
-}
-
-// Minimal deferred (resolve/reject are always assigned synchronously in the
-// executor). Equivalent to Promise.withResolvers but typed against a custom
-// error type without resorting to ``unknown``.
-const createDeferred = <A, E>(): Deferred<A, E> => {
-  let resolve!: (a: A) => void
-  let reject!: (e: E) => void
-  const promise = new Promise<A>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-  return { promise, resolve, reject }
-}
-
-// Sentinel resolved to the pending shutdown handler when the kernel exits
-// cleanly. The shutdown call site ignores the value (`sendShutdown` always
-// resolves its outer promise), so the only requirement is that it satisfies
-// the RunResponse type. Keep it minimal: zero cells, zero duration.
-const EMPTY_SHUTDOWN_RESPONSE = {
-  success: true,
-  executedCells: [] as ReadonlyArray<number>,
-  durationMs: 0,
-  outputs: [] as ReadonlyArray<unknown>
-} as unknown as RunResponse
-
-const killProc = (proc: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): void => {
-  try {
-    proc.kill(signal)
-  } catch {
-    // proc may already be dead; ignore.
-  }
-}
-
-export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShape => {
-  const states = new Map<string, KernelState>()
-  let totalRequests = 0
-
-  const appendStderr = (state: KernelState, chunk: string): void => {
-    for (const line of chunk.split(/\r?\n/)) {
-      if (!line) continue
-      state.stderrTail.push(line)
-      if (state.stderrTail.length > STDERR_TAIL_MAX) {
-        state.stderrTail.shift()
-      }
-    }
-  }
-
-  const failAllPending = (state: KernelState, message: string, detail: string): void => {
-    for (const [id, handler] of state.pending) {
-      clearTimeout(handler.timer)
-      handler.cleanup?.()
-      handler.reject(new PythonRunnerError({ message, detail: `${detail} (id=${id})` }))
-    }
-    state.pending.clear()
-    if (!state.readyResolved && state.rejectReady) {
-      state.rejectReady(new PythonRunnerError({ message, detail }))
-    }
-  }
-
-  const spawnKernel = (filePath: string, runtime: KernelRuntimeOptions): KernelState => {
-    const proc = spawn(
-      runtime.pythonPath,
-      [runtime.helperPath],
-      {
-        cwd: opts.workingDirectory ?? process.cwd(),
-        stdio: ["pipe", "pipe", "pipe"]
-      }
-    )
-    const startedAt = Date.now()
-    // Build the ready-deferred promise up front so we can store the
-    // resolve/reject closures on the state in one place — no second pass
-    // after construction to wire them up.
-    const readyDeferred = createDeferred<void, PythonRunnerError>()
-    const state: KernelState = {
-      proc,
-      filePath,
-      pythonPath: runtime.pythonPath,
-      helperPath: runtime.helperPath,
-      pid: proc.pid ?? -1,
-      nextId: 1,
-      pending: new Map(),
-      readyPromise: readyDeferred.promise,
-      resolveReady: readyDeferred.resolve,
-      rejectReady: readyDeferred.reject,
-      readyResolved: false,
-      lastUsed: startedAt,
-      requestsHandled: 0,
-      stderrTail: [],
-      alive: true,
-      startedAt,
-      shutdownRequestId: undefined
-    }
-
-    const rl = readline.createInterface({ input: proc.stdout })
-    rl.on("line", (line) => {
-      if (!line.trim()) return
-      let msg: unknown
-      try {
-        msg = JSON.parse(line)
-      } catch {
-        return
-      }
-      if (!msg || typeof msg !== "object") return
-      const m = msg as Record<string, unknown>
-      if (!state.readyResolved && m.ready === true) {
-        state.readyResolved = true
-        state.resolveReady()
-        return
-      }
-      if (!state.readyResolved && m.ready === undefined && m.error) {
-        state.readyResolved = true
-        state.rejectReady(
-          new PythonRunnerError({
-            message: typeof m.error === "object" && m.error !== null && "message" in m.error
-              ? String((m.error as { message: unknown }).message ?? "kernel init failed")
-              : "kernel init failed",
-            detail: typeof m.error === "object" && m.error !== null && "detail" in m.error
-              ? String((m.error as { detail: unknown }).detail ?? "")
-              : ""
-          })
-        )
-        return
-      }
-      const id = typeof m.id === "number" ? m.id : undefined
-      if (id === undefined) return
-      const handler = state.pending.get(id)
-      if (!handler) return
-      state.pending.delete(id)
-      clearTimeout(handler.timer)
-      handler.cleanup?.()
-      if (m.error) {
-        if (typeof m.error !== "object" || m.error === null) {
-          handler.reject(
-            new PythonRunnerError({
-              message: "kernel returned a non-object error payload",
-              detail: typeof m.error === "string" ? m.error : String(m.error)
-            })
-          )
-          return
-        }
-        const e = m.error as { ename?: unknown; evalue?: unknown; traceback?: unknown }
-        const ename = typeof e.ename === "string" ? e.ename : "Error"
-        const evalue = typeof e.evalue === "string" ? e.evalue : ""
-        handler.reject(
-          new PythonRunnerError({
-            message: `${ename}: ${evalue}`,
-            detail: ""
-          })
-        )
-        return
-      }
-      handler.resolve(m as unknown as RunResponse)
-    })
-
-    proc.stderr.on("data", (chunk: Buffer) => {
-      appendStderr(state, chunk.toString("utf8"))
-    })
-
-    proc.on("close", (code, signal) => {
-      state.alive = false
-      // When the kernel exits cleanly (exit 0), there is no failure to
-      // propagate for the shutdown request we sent ourselves; resolve it
-      // immediately so we don't wait for its 2s safety-net timer to fire.
-      // For non-zero or null exit codes, fall back to the standard failure
-      // path. Any other pending request (a real `cell`/`all` call in flight
-      // when the process died) must be failed explicitly so the caller sees
-      // "kernel exited unexpectedly" instead of a bogus `null` response.
-      if (code === 0) {
-        for (const [id, handler] of state.pending) {
-          clearTimeout(handler.timer)
-          handler.cleanup?.()
-          if (id === state.shutdownRequestId) {
-            handler.resolve(EMPTY_SHUTDOWN_RESPONSE)
-            continue
-          }
-          handler.reject(
-            new PythonRunnerError({
-              message: "kernel exited unexpectedly",
-              detail: `code=${code ?? "?"} signal=${signal ?? "none"} id=${id}`
-            })
-          )
-        }
-        state.pending.clear()
-        return
-      }
-      failAllPending(
-        state,
-        "kernel subprocess exited",
-        `code=${code ?? "?"} signal=${signal ?? "none"}`
-      )
-    })
-
-    proc.on("error", (err) => {
-      state.alive = false
-      failAllPending(state, "kernel subprocess error", err.message)
-    })
-
-    return state
-  }
-
-  const writeInit = (state: KernelState, request: RunRequest): void => {
-    const init = { ...request, id: 0, mode: "serve" as const }
-    const stdin = state.proc.stdin
-    if (!stdin || !stdin.writable) {
-      state.readyResolved = true
-      state.rejectReady(
-        new PythonRunnerError({
-          message: "kernel stdin is closed",
-          detail: `filePath=${state.filePath} id=0 during init`
-        })
-      )
-      return
-    }
-    try {
-      stdin.write(JSON.stringify(init) + "\n")
-    } catch (err) {
-      state.readyResolved = true
-      state.rejectReady(
-        new PythonRunnerError({
-          message: "failed to write warm kernel init",
-          detail: err instanceof Error ? err.message : String(err)
-        })
-      )
-    }
-  }
-
-  const runtimeFromRequest = (runtime?: KernelRuntimeOptions): KernelRuntimeOptions =>
-    runtime ?? { pythonPath: opts.pythonPath, helperPath: opts.helperPath }
-
-  const getOrStart = async (
-    filePath: string,
-    request: RunRequest,
-    runtimeInput?: KernelRuntimeOptions
-  ): Promise<KernelState> => {
-    const runtime = runtimeFromRequest(runtimeInput)
-    const existing = states.get(filePath)
-    if (
-      existing &&
-      existing.alive &&
-      existing.pythonPath === runtime.pythonPath &&
-      existing.helperPath === runtime.helperPath
-    ) {
-      return existing
-    }
-    if (existing && existing.alive) {
-      await killKernel(filePath)
-    }
-    if (existing && !existing.alive) {
-      states.delete(filePath)
-    }
-    const state = spawnKernel(filePath, runtime)
-    states.set(filePath, state)
-    writeInit(state, request)
-    return state
-  }
-
-  const sendShutdown = (state: KernelState): Promise<void> =>
-    new Promise((resolve) => {
-      const id = state.nextId++
-      state.shutdownRequestId = id
-      const timer = setTimeout(() => {
-        state.pending.delete(id)
-        handlerCleanup?.()
-        if (state.shutdownRequestId === id) {
-          state.shutdownRequestId = undefined
-        }
-        resolve()
-      }, 2_000)
-      let handlerCleanup: (() => void) | undefined
-      state.pending.set(id, {
-        resolve: () => {
-          clearTimeout(timer)
-          handlerCleanup?.()
-          if (state.shutdownRequestId === id) {
-            state.shutdownRequestId = undefined
-          }
-          resolve()
-        },
-        reject: () => {
-          clearTimeout(timer)
-          handlerCleanup?.()
-          if (state.shutdownRequestId === id) {
-            state.shutdownRequestId = undefined
-          }
-          resolve()
-        },
-        timer,
-        cleanup: () => handlerCleanup?.()
-      })
-      // Guard against a closed/destroyed stdin before writing. The
-      // ``stdin?.write`` form silently no-ops on a missing stream but
-      // emits EPIPE asynchronously when the stream is destroyed; that
-      // becomes an uncaught error and crashes the plugin. Reject the
-      // shutdown request immediately so killKernel can move on.
-      const stdin = state.proc.stdin
-      if (!stdin || !stdin.writable) {
-        clearTimeout(timer)
-        state.pending.delete(id)
-        if (state.shutdownRequestId === id) {
-          state.shutdownRequestId = undefined
-        }
-        resolve()
-        return
-      }
-      // Attach a one-shot error handler so EPIPE / write-after-close
-      // failures are swallowed instead of crashing the process.
-      const onStdinError = (): void => {
-        clearTimeout(timer)
-        handlerCleanup?.()
-        state.pending.delete(id)
-        if (state.shutdownRequestId === id) {
-          state.shutdownRequestId = undefined
-        }
-        resolve()
-      }
-      stdin.once("error", onStdinError)
-      handlerCleanup = () => stdin.off("error", onStdinError)
-      try {
-        stdin.write(JSON.stringify({ id, mode: "shutdown" }) + "\n")
-      } catch {
-        handlerCleanup()
-        clearTimeout(timer)
-        state.pending.delete(id)
-        if (state.shutdownRequestId === id) {
-          state.shutdownRequestId = undefined
-        }
-        resolve()
-      }
-    })
-
-  const killKernel = async (filePath: string): Promise<void> => {
-    const state = states.get(filePath)
-    if (!state) return
-    states.delete(filePath)
-    if (!state.alive) return
-    await sendShutdown(state)
-    if (state.alive) {
-      killProc(state.proc, "SIGTERM")
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => {
-          if (state.alive) killProc(state.proc, "SIGKILL")
-          resolve()
-        }, 3_000)
-        state.proc.once("close", () => {
-          clearTimeout(t)
-          resolve()
-        })
-      })
-    }
-  }
-
-  const execute = (
-    filePath: string,
-    request: RunRequest,
-    runtime?: KernelRuntimeOptions
-  ): Effect.Effect<RunResponse, NotebookError> =>
-    Effect.gen(function* () {
-      const state = yield* Effect.tryPromise({
-        try: () => getOrStart(filePath, request, runtime),
-        catch: (err) =>
-          new PythonRunnerError({
-            message: "failed to start warm kernel",
-            detail: err instanceof Error ? err.message : String(err)
-          })
-      })
-      yield* Effect.tryPromise({
-        try: () => state.readyPromise,
-        catch: (err) =>
-          err instanceof PythonRunnerError
-            ? err
-            : new PythonRunnerError({
-                message: "warm kernel failed to become ready",
-                detail: err instanceof Error ? err.message : String(err)
-              })
-      })
-      const id = state.nextId++
-      const timeoutMs = request.timeoutMs ?? opts.defaultTimeoutMs
-      const raw = yield* Effect.tryPromise<RunResponse, PythonRunnerError>({
-        try: () =>
-          new Promise<RunResponse>((resolve, reject) => {
-            const timer = setTimeout(() => {
-              const handler = state.pending.get(id)
-              handler?.cleanup?.()
-              state.pending.delete(id)
-              reject(
-                new PythonRunnerError({
-                  message: `warm kernel request timed out after ${timeoutMs}ms`,
-                  detail: `filePath=${filePath} id=${id}`
-                })
-              )
-            }, timeoutMs)
-            state.pending.set(id, {
-              resolve: (r) => {
-                cleanupStdinError?.()
-                resolve(r)
-              },
-              reject: (e) => {
-                cleanupStdinError?.()
-                reject(e)
-              },
-              timer,
-              cleanup: () => cleanupStdinError?.()
-            })
-            let cleanupStdinError: (() => void) | undefined
-            try {
-              const payload = JSON.stringify({ id, ...request }) + "\n"
-              // Guard against a closed stdin before writing. If the kernel
-              // has already exited, the ``?.write`` form would silently
-              // no-op and the request would sit in ``pending`` until the
-              // timeout fired. Reject immediately with a clear cause.
-              const stdin = state.proc.stdin
-              if (!stdin || !stdin.writable) {
-                state.pending.delete(id)
-                clearTimeout(timer)
-                reject(
-                  new PythonRunnerError({
-                    message: "kernel stdin is closed",
-                    detail: `filePath=${filePath} id=${id}`
-                  })
-                )
-                return
-              }
-              // One-shot error handler so a destroy-during-write (EPIPE)
-              // is observed on the request and not as an uncaught
-              // stream error that crashes the plugin.
-              const onStdinError = (): void => {
-                cleanupStdinError?.()
-                state.pending.delete(id)
-                clearTimeout(timer)
-                reject(
-                  new PythonRunnerError({
-                    message: "kernel stdin is closed",
-                    detail: `filePath=${filePath} id=${id}`
-                  })
-                )
-              }
-              stdin.once("error", onStdinError)
-              cleanupStdinError = () => stdin.off("error", onStdinError)
-              // ``write`` returns false when the internal buffer is full;
-              // that is normal back-pressure, not an error. The data is
-              // queued and Node will flush it. We only reject on a real
-              // exception.
-              stdin.write(payload)
-            } catch (err) {
-              cleanupStdinError?.()
-              state.pending.delete(id)
-              clearTimeout(timer)
-              reject(
-                new PythonRunnerError({
-                  message: "failed to write to warm kernel stdin",
-                  detail: err instanceof Error ? err.message : String(err)
-                })
-              )
-            }
-          }),
-        catch: (err) =>
-          err instanceof PythonRunnerError
-            ? err
-            : new PythonRunnerError({
-                message: "warm kernel request failed",
-                detail: err instanceof Error ? err.message : String(err)
-              })
-      })
-      const parsed = RunResponseSchema.safeParse(raw)
-      if (!parsed.success) {
-        return yield* new PythonRunnerError({
-          message: "warm kernel returned an invalid response",
-          detail: parsed.error.issues
-            .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-            .join("; ")
-        })
-      }
-      const response = parsed.data
-      if (!response.success && response.error) {
-        return yield* new PythonRunnerError({
-          message: `${response.error.ename}: ${response.error.evalue}`,
-          detail: response.error.traceback.slice(0, 5).join("\n")
-        })
-      }
-      state.requestsHandled++
-      state.lastUsed = Date.now()
-      totalRequests++
-      return response
-    })
-
-  const isRunning = (filePath: string): boolean => {
-    const state = states.get(filePath)
-    return !!state && state.alive
-  }
-
-  const list = (): ReadonlyArray<KernelInfo> => {
-    const out: KernelInfo[] = []
-    for (const [filePath, state] of states) {
-      if (!state.alive) continue
-      out.push({
-        filePath,
-        pid: state.pid,
-        lastUsedAt: state.lastUsed,
-        requestsHandled: state.requestsHandled,
-        stderrTail: state.stderrTail.slice(-STDERR_TAIL_MAX).join("\n")
-      })
-    }
-    return out
-  }
-
-  const restart = (filePath: string): Effect.Effect<void, never> =>
-    Effect.promise(async () => {
-      await killKernel(filePath)
-    })
-
-  const shutdown = (filePath: string): Effect.Effect<void, never> =>
-    Effect.promise(async () => {
-      await killKernel(filePath)
-    })
-
-  const disposeAll = (): Effect.Effect<void, never> =>
-    Effect.promise(async () => {
-      const all = Array.from(states.keys())
-      await Promise.all(all.map((k) => killKernel(k)))
-      states.clear()
-    })
-
-  const stats = (): KernelManagerStats => {
-    let live = 0
-    for (const state of states.values()) {
-      if (state.alive) live++
-    }
-    return { liveKernels: live, totalRequests }
-  }
-
-  return {
-    execute,
-    isRunning,
-    list,
-    restart,
-    shutdown,
-    disposeAll,
-    stats
-  }
-}
-
-export interface KernelManagerShape {
-  readonly execute: (
-    filePath: string,
-    request: RunRequest,
-    runtime?: KernelRuntimeOptions
-  ) => Effect.Effect<RunResponse, NotebookError>
-  readonly isRunning: (filePath: string) => boolean
-  readonly list: () => ReadonlyArray<KernelInfo>
-  readonly restart: (filePath: string) => Effect.Effect<void, never>
-  readonly shutdown: (filePath: string) => Effect.Effect<void, never>
-  readonly disposeAll: () => Effect.Effect<void, never>
-  readonly stats: () => KernelManagerStats
-}
-
-export class KernelManager extends Context.Tag("@ipynb/KernelManager")<
-  KernelManager,
-  KernelManagerShape
->() {}

@@ -1,7 +1,7 @@
+import { sanitizeInline } from "../utils/markdown-safe.js"
 import { z } from "zod"
-import { tool } from "@opencode-ai/plugin"
-import { Effect } from "effect"
-import type { ToolContext } from "@opencode-ai/plugin"
+import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
+import type { ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
 import { errorToMessage } from "../domain/errors.js"
 
@@ -20,48 +20,32 @@ const args = {
 
 export const ipynbEditTool = tool({
   description:
-    "Edit a single cell of a Jupyter Notebook safely. Validates before and after, preserves metadata, asks permission before writing, and returns a textual diff of the cell source. For code cells, the default 'auto' mode clears outputs and execution_count when the source changes.",
+    "Edit a single cell of a Jupyter Notebook safely (cellIndex is 0-based). Validates before and after, preserves metadata, asks permission before writing, and returns a concise confirmation. For code cells, the default 'auto' mode clears outputs and execution_count when the source changes.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context)
     try {
-      const result = await Effect.runPromise(
+      const result = await runToolEffect(
         services.edit.editCell(input.filePath, {
           cellIndex: input.cellIndex,
           source: input.source,
           clearOutputs: input.clearOutputs
         })
       )
-      const lines: string[] = []
-      lines.push(`Edited cell [${result.cellIndex}] of \`${result.displayPath}\` (${result.cellType}).`)
-      lines.push(`Outputs cleared: ${result.clearedOutputs ? "yes" : "no"}`)
-      lines.push("")
-      lines.push("**Old source (preview):**")
-      lines.push("```")
-      lines.push(result.oldPreview)
-      lines.push("```")
-      lines.push("")
-      lines.push("**New source (preview):**")
-      lines.push("```")
-      lines.push(result.newPreview)
-      lines.push("```")
-      lines.push("")
-      lines.push("**Diff:**")
-      lines.push("```diff")
-      lines.push(result.diff)
-      lines.push("```")
+      const output = `Edited cell [${result.cellIndex}] of \`${sanitizeInline(result.displayPath)}\` (${result.cellType}). Outputs cleared: ${result.clearedOutputs ? "yes" : "no"}.`
       return {
         title: `Edit cell ${input.cellIndex} of ${input.filePath}`,
-        output: lines.join("\n"),
+        output,
         metadata: {
           filePath: result.absPath,
           cellIndex: result.cellIndex,
           cellType: result.cellType,
           clearedOutputs: result.clearedOutputs,
-          diff: result.diff
+          changed: result.changed
         }
       }
     } catch (err) {
+      rethrowPermissionDenied(err)
       const message = errorToMessage(err)
       return {
         title: `Edit cell ${input.cellIndex} of ${input.filePath} (error)`,

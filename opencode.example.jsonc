@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Local development example. Copy to opencode.jsonc and replace the paths.
+  // opencode.jsonc is repo-ignored for local use; this example is the
+  // versioned, machine-independent version.
+  "plugins": [
+    {
+      "package": "/path/to/opencode-ipynb",
+      "options": {
+        "pythonPath": "/path/to/opencode-ipynb/.venv/bin/python",
+        "helperRelativePath": "python/ipynb_runner.py",
+        "pyrightPath": "pyright",
+        "lspDiagnostics": true,
+        "diagnosticsTimeoutMs": 15000
+      }
+    },
+    "/path/to/opencode-v2-lsp-support"
+  ],
+  "references": {
+    "effect": {
+      "repository": "Effect-TS/effect",
+      "branch": "effect@4.0.6",
+      "description": "You MUST use this when working with Effect 4.0.6, Effect.gen, services, layers, error handling, Cause.findErrorOption, Semaphore, or Effect.runPromise in the notebook services. This is the exact Effect version used by OpenCode 2 and this plugin; read the repository instead of relying only on training."
+    }
+  },
+  "lsp": {
+    // `.ipynb` is intentionally not mapped here: pyright expects Python
+    // source, not notebook JSON. ipynb_lsp builds a virtual .py document and
+    // `operation=materialize` writes a sidecar for the external lsp tool.
+    "pyright": {
+      "command": ["pyright-langserver", "--stdio"],
+      "extensions": [".py", ".pyi"]
+    }
+  }
+}

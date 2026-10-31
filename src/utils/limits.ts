@@ -1,8 +1,21 @@
 export const DEFAULT_MAX_SOURCE_CHARS = 12_000
 export const DEFAULT_MAX_OUTPUT_CHARS = 6_000
 export const DEFAULT_MAX_INSPECT_CELLS = 200
-export const DEFAULT_MAX_TRACEBACK_CHARS = 8_000
 export const DEFAULT_MAX_IMAGE_NOTICE_COUNT = 20
 export const DEFAULT_MAX_EXPORT_CHARS = 60_000
 export const DEFAULT_RUN_TIMEOUT_MS = 120_000
 export const DEFAULT_INSPECT_PREVIEW_CHARS = 240
+
+export const MAX_NOTEBOOK_BYTES = 50 * 1024 * 1024
+export const MAX_READ_CELLS = 500
+
+/** Hard caps that protect the host context from pathological notebooks. */
+export const MAX_INSPECT_CELLS = 1_000
+export const MAX_METADATA_CHARS = 20_000
+export const MAX_RUN_RESPONSE_CHARS = 120_000
+export const MAX_READ_RESPONSE_CHARS = 120_000
+export const MAX_HELPER_STDOUT_BYTES = 64 * 1024 * 1024
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+export const MAX_DIAGNOSTICS_METADATA = 500
+export const MAX_ANALYSIS_WARNINGS = 500
+export const MAX_DIAGNOSTICS_METADATA_BYTES = 200_000

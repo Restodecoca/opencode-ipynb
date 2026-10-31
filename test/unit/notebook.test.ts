@@ -11,14 +11,13 @@ import {
   makeReadImpl,
   makeEditImpl,
   makeCleanImpl,
-  makeOutputImpl,
-  makeDiffService
+  makeOutputImpl
 } from "../../src/services/index.js"
-import { CellIndexOutOfBoundsError, NotebookNotFoundError, NotebookParseError, NotebookValidationError, PathOutsideWorktreeError } from "../../src/domain/errors.js"
+import { CellIndexOutOfBoundsError, NotebookNotFoundError, NotebookParseError, NotebookValidationError } from "../../src/domain/errors.js"
 import { buildServices } from "../../src/services/index.js"
 import { inspectCell } from "../../src/format/diagnostics.js"
 import { formatOutputs } from "../../src/format/outputs.js"
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolContext } from "../../src/tool.js"
 
 const FIXTURES = path.resolve(__dirname, "..", "fixtures")
 
@@ -169,6 +168,182 @@ describe("Read", () => {
   })
 })
 
+
+describe("NotebookReadService range guard", () => {
+  it("clamps a huge read range before allocating indexes", async () => {
+    const read = makeReadImpl(
+      makePathService({ directory: FIXTURES, worktree: FIXTURES, platform: process.platform }),
+      makeNotebookFileService()
+    )
+    const result = await runOrThrow(
+      read.readRange(path.join(FIXTURES, "simple.ipynb"), 0, 50_000_000)
+    )
+    expect(result.indexes.length).toBeLessThanOrEqual(result.totalCells)
+  })
+
+  it("rejects a range on an empty notebook instead of returning an empty success", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-empty-range-"))
+    const file = path.join(dir, "empty.ipynb")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [] })
+    )
+    const read = makeReadImpl(
+      makePathService({ directory: dir, worktree: dir, platform: process.platform }),
+      makeNotebookFileService()
+    )
+    try {
+      const result = await Effect.runPromiseExit(read.readRange(file, 5, 10))
+      expect(result._tag).toBe("Failure")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a range larger than the per-read cell limit", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-range-cap-"))
+    const file = path.join(dir, "many.ipynb")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: Array.from({ length: 600 }, () => ({
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: "x = 1"
+        }))
+      })
+    )
+    const read = makeReadImpl(
+      makePathService({ directory: dir, worktree: dir, platform: process.platform }),
+      makeNotebookFileService()
+    )
+    try {
+      const result = await Effect.runPromiseExit(read.readRange(file, 0, 599))
+      expect(result._tag).toBe("Failure")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a range whose start is past the last cell", async () => {
+    const read = makeReadImpl(
+      makePathService({ directory: FIXTURES, worktree: FIXTURES, platform: process.platform }),
+      makeNotebookFileService()
+    )
+    const result = await Effect.runPromiseExit(
+      read.readRange(path.join(FIXTURES, "simple.ipynb"), 999, 1000)
+    )
+    expect(result._tag).toBe("Failure")
+  })
+})
+
+
+  it("omits error tracebacks with includeOutputs when includeErrors is false", async () => {
+    const read = makeReadImpl(
+      makePathService({ directory: FIXTURES, worktree: FIXTURES, platform: process.platform }),
+      makeNotebookFileService()
+    )
+    const result = await runOrThrow(
+      read.readCell(path.join(FIXTURES, "error.ipynb"), 0, {
+        includeOutputs: true,
+        includeErrors: false
+      })
+    )
+    expect(result.rendered).not.toContain("Outputs:")
+    expect(result.rendered).not.toContain("NameError")
+    expect(result.rendered).not.toContain("Traceback")
+  })
+
+
+  it("hard-caps ipynb_outputs read even with a huge maxOutputChars", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-outputs-cap-"))
+    const file = path.join(dir, "big.ipynb")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: [
+          {
+            cell_type: "code",
+            execution_count: 1,
+            metadata: {},
+            outputs: [
+              { output_type: "stream", name: "stdout", text: "x".repeat(200_000) }
+            ],
+            source: "print('x')"
+          }
+        ]
+      })
+    )
+    const pathSvc = makePathService({ directory: dir, worktree: dir, platform: process.platform })
+    const fileSvc = makeNotebookFileService()
+    const permSvc = makePermissionService(makeFakeContext(dir, dir))
+    const output = makeOutputImpl(pathSvc, fileSvc, permSvc)
+    try {
+      const result = await runOrThrow(
+        output.readOutputs(file, {
+          cellIndex: 0,
+          includeImages: false,
+          maxOutputChars: 1_000_000
+        })
+      )
+      expect(result.rendered.length).toBeLessThanOrEqual(120_000)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+
+  it("removes jupyter.widgets cell metadata", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-clean-jwidgets-"))
+    const file = path.join(dir, "widgets.ipynb")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: [
+          {
+            cell_type: "code",
+            metadata: { jupyter: { widgets: { state: {} } } },
+            execution_count: null,
+            outputs: [],
+            source: "x = 1"
+          }
+        ]
+      })
+    )
+    const pathSvc = makePathService({ directory: dir, worktree: dir, platform: process.platform })
+    const fileSvc = makeNotebookFileService()
+    const permSvc = makePermissionService(makeFakeContext(dir, dir))
+    const clean = makeCleanImpl(pathSvc, fileSvc, permSvc)
+    try {
+      await runOrThrow(
+        clean.clean(file, {
+          clearOutputs: false,
+          clearExecutionCount: false,
+          stripWidgetState: true,
+          stripLargeImages: false,
+          normalizeSource: false
+        })
+      )
+      const after = JSON.parse(fs.readFileSync(file, "utf8")) as {
+        cells: Array<{ metadata: { jupyter?: Record<string, unknown> } }>
+      }
+      expect(after.cells[0]?.metadata.jupyter?.widgets).toBeUndefined()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
 describe("Edit", () => {
   it("edits a markdown cell and preserves metadata", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
@@ -181,8 +356,7 @@ describe("Edit", () => {
     })
     const fileSvc = makeNotebookFileService()
     const permSvc = makePermissionService(makeFakeContext(dir, dir))
-    const diffSvc = makeDiffService()
-    const edit = makeEditImpl(pathSvc, fileSvc, diffSvc, permSvc)
+    const edit = makeEditImpl(pathSvc, fileSvc, permSvc)
     const originalMeta = (() => {
       const nb = JSON.parse(fs.readFileSync(file, "utf8")) as { cells: Array<{ cell_type: string; metadata: unknown }> }
       return nb.cells[0]?.metadata
@@ -206,8 +380,7 @@ describe("Edit", () => {
     })
     const fileSvc = makeNotebookFileService()
     const permSvc = makePermissionService(makeFakeContext(dir, dir))
-    const diffSvc = makeDiffService()
-    const edit = makeEditImpl(pathSvc, fileSvc, diffSvc, permSvc)
+    const edit = makeEditImpl(pathSvc, fileSvc, permSvc)
     const result = await runOrThrow(
       edit.editCell(file, { cellIndex: 0, source: "print('updated')" })
     )
@@ -240,6 +413,64 @@ describe("Clean", () => {
     expect(codeCell.outputs.length).toBe(0)
     expect(codeCell.execution_count).toBeNull()
     fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+
+  it("strips notebook and cell widget state", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-clean-widgets-"))
+    const file = path.join(dir, "widgets.ipynb")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: { widgets: { state: {} } },
+        cells: [
+          {
+            cell_type: "code",
+            metadata: { widgets: { state: {} } },
+            execution_count: null,
+            outputs: [],
+            source: "x = 1"
+          },
+          {
+            cell_type: "code",
+            metadata: { jupyter: { outputs: {} } },
+            execution_count: null,
+            outputs: [],
+            source: "y = 2"
+          }
+        ]
+      })
+    )
+    const pathSvc = makePathService({ directory: dir, worktree: dir, platform: process.platform })
+    const fileSvc = makeNotebookFileService()
+    const permSvc = makePermissionService(makeFakeContext(dir, dir))
+    const clean = makeCleanImpl(pathSvc, fileSvc, permSvc)
+    try {
+      const result = await runOrThrow(
+        clean.clean(file, {
+          clearOutputs: false,
+          clearExecutionCount: false,
+          stripWidgetState: true,
+          stripLargeImages: false,
+          normalizeSource: false
+        })
+      )
+      expect(result.removedWidgets).toBe(3)
+      const after = JSON.parse(fs.readFileSync(file, "utf8")) as {
+        metadata: Record<string, unknown>
+        cells: Array<{ metadata: Record<string, unknown> }>
+      }
+      expect(after.metadata.widgets).toBeUndefined()
+      expect(after.cells[0]?.metadata.widgets).toBeUndefined()
+      expect(
+        (after.cells[1]?.metadata.jupyter as Record<string, unknown> | undefined)
+          ?.outputs
+      ).toBeUndefined()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("normalizes source arrays for markdown/raw/code and counts source-only changes", async () => {
@@ -373,5 +604,50 @@ describe("NotebookNotFoundError", () => {
       pathSvc.ensureExists(path.join(FIXTURES, "does-not-exist.ipynb")).pipe(Effect.flip)
     )
     expect(result).toBeInstanceOf(NotebookNotFoundError)
+  })
+  it("marks clearOutputs:always as a change even when the source is identical", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
+    const file = path.join(dir, "test.ipynb")
+    fs.copyFileSync(path.join(FIXTURES, "outputs.ipynb"), file)
+    const pathSvc = makePathService({
+      directory: dir,
+      worktree: dir,
+      platform: process.platform
+    })
+    const fileSvc = makeNotebookFileService()
+    const permSvc = makePermissionService(makeFakeContext(dir, dir))
+    const edit = makeEditImpl(pathSvc, fileSvc, permSvc)
+    const notebook = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      cells: Array<{ source: string | string[] }>
+    }
+    const source = Array.isArray(notebook.cells[0]?.source)
+      ? notebook.cells[0]!.source.join("")
+      : notebook.cells[0]!.source
+    const result = await runOrThrow(
+      edit.editCell(file, { cellIndex: 0, source, clearOutputs: "always" })
+    )
+    expect(result.changed).toBe(true)
+    expect(result.clearedOutputs).toBe(true)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+})
+
+describe("inspectCell > large streams", () => {
+
+  it("counts large stdout streams as large output", () => {
+    const inspected = inspectCell(
+      {
+        cell_type: "code",
+        execution_count: 1,
+        metadata: {},
+        source: "print('x')",
+        outputs: [
+          { output_type: "stream", name: "stdout", text: "x".repeat(100_000) }
+        ]
+      },
+      0
+    )
+    expect(inspected.hasLargeOutput).toBe(true)
   })
 })

@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Effect } from "effect"
 import {
   CellIndexOutOfBoundsError,
   NotebookNotFoundError,
@@ -8,14 +8,16 @@ import {
   PathOutsideWorktreeError,
   PermissionDeniedError
 } from "../domain/errors.js"
-import { NotebookFileService, type NotebookFileServiceShape } from "./NotebookFileService.js"
-import { PathService, type PathServiceShape } from "./PathService.js"
-import { PermissionService, type PermissionServiceShape } from "./PermissionService.js"
-import { DiffService, type DiffServiceShape } from "./DiffService.js"
+import type { NotebookFileServiceShape } from "./NotebookFileService.js"
+import { assertRevisionUnchanged, contentHash, pinRealPath } from "./revision.js"
+import { randomUUID } from "node:crypto"
+import type { PathServiceShape } from "./PathService.js"
+import {
+  type PermissionServiceShape
+} from "./PermissionService.js"
 import { cellSource, type NotebookRaw } from "../domain/notebook.js"
 import type { CellRaw, CodeCellRaw, MarkdownCellRaw, RawCellRaw } from "../domain/cell.js"
 import { firstLine, truncatePreview } from "../utils/truncate.js"
-import { unwrapFiberFailure } from "../utils/fiber.js"
 
 export interface EditRequest {
   readonly cellIndex: number
@@ -29,9 +31,7 @@ export interface EditResult {
   readonly cellIndex: number
   readonly cellType: "code" | "markdown" | "raw"
   readonly clearedOutputs: boolean
-  readonly diff: string
-  readonly oldPreview: string
-  readonly newPreview: string
+  readonly changed: boolean
   readonly notebook: NotebookRaw
 }
 
@@ -58,6 +58,7 @@ export interface MoveResult {
   readonly absPath: string
   readonly fromIndex: number
   readonly toIndex: number
+  readonly cellType: CellType
   readonly totalCells: number
 }
 
@@ -134,15 +135,17 @@ export interface NotebookEditServiceShape {
   >
 }
 
-export class NotebookEditService extends Context.Tag("@ipynb/NotebookEditService")<
-  NotebookEditService,
-  NotebookEditServiceShape
->() {}
-
-const buildNewCell = (cellType: CellType, source: string): CellRaw => {
+const buildNewCell = (
+  cellType: CellType,
+  source: string,
+  nbformatMinor: number
+): CellRaw => {
+  // nbformat 4.5 requires every cell to carry a stable id.
+  const id = nbformatMinor >= 5 ? { id: randomUUID() } : {}
   if (cellType === "code") {
     const cell: CodeCellRaw = {
       cell_type: "code",
+      ...id,
       metadata: {},
       execution_count: null,
       source,
@@ -153,6 +156,7 @@ const buildNewCell = (cellType: CellType, source: string): CellRaw => {
   if (cellType === "markdown") {
     const cell: MarkdownCellRaw = {
       cell_type: "markdown",
+      ...id,
       metadata: {},
       source
     }
@@ -160,6 +164,7 @@ const buildNewCell = (cellType: CellType, source: string): CellRaw => {
   }
   const cell: RawCellRaw = {
     cell_type: "raw",
+    ...id,
     metadata: {},
     source
   }
@@ -169,7 +174,6 @@ const buildNewCell = (cellType: CellType, source: string): CellRaw => {
 const makeEditImpl = (
   pathSvc: PathServiceShape,
   fileSvc: NotebookFileServiceShape,
-  diffSvc: DiffServiceShape,
   permSvc: PermissionServiceShape
 ): NotebookEditServiceShape => {
   const editCell = (
@@ -189,11 +193,14 @@ const makeEditImpl = (
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
       yield* pathSvc.ensureExists(abs)
+      const pinned = yield* pinRealPath(abs)
       return yield* fileSvc
         .withFileLock(
-          abs,
+          pinned,
           Effect.gen(function* () {
-            const notebook = yield* fileSvc.read(abs)
+            const snapshot = yield* fileSvc.readWithText(pinned)
+            const notebook = snapshot.notebook
+            const revision = contentHash(snapshot.text)
             const idx = request.cellIndex
             if (idx < 0 || idx >= notebook.cells.length) {
               return yield* new CellIndexOutOfBoundsError({
@@ -206,24 +213,41 @@ const makeEditImpl = (
             const cell = notebook.cells[idx] as CellRaw
             const oldSource = cellSource(cell)
             const newSource = request.source
-            const diff = diffSvc.cellDiff(oldSource, newSource)
-            const oldPreview = truncatePreview(oldSource, 400)
-            const newPreview = truncatePreview(newSource, 400)
+            const displayPath = pathSvc.toDisplay(abs)
             const mode = request.clearOutputs ?? "auto"
-            const clearedOutputs = mode === "always" || (mode === "auto" && cell.cell_type === "code" && oldSource !== newSource)
+            const sourceChanged = oldSource !== newSource
+            const clearedOutputs =
+              cell.cell_type === "code" &&
+              (mode === "always" || (mode === "auto" && sourceChanged)) &&
+              ((cell as CodeCellRaw).outputs.length > 0 ||
+                (cell as CodeCellRaw).execution_count !== null)
+            const changed = sourceChanged || clearedOutputs
+            if (!changed) {
+              return {
+                displayPath,
+                absPath: abs,
+                cellIndex: idx,
+                cellType: cell.cell_type,
+                clearedOutputs: false,
+                changed: false,
+                notebook
+              }
+            }
 
+            const lexicalPaths = yield* permSvc.aliases(abs)
+            const pinnedPaths = yield* permSvc.aliases(pinned)
+            const permissionPaths = [
+              ...new Set([...lexicalPaths, ...pinnedPaths])
+            ]
             yield* permSvc.ask({
               kind: "edit",
               action: "ipynb_edit",
-              patterns: [abs],
-              always: [abs],
+              patterns: permissionPaths,
+              always: permissionPaths,
               metadata: {
                 filePath: abs,
                 cellIndex: idx,
-                cellType: cell.cell_type,
-                oldPreview,
-                newPreview,
-                diff
+                cellType: cell.cell_type
               }
             })
 
@@ -252,24 +276,21 @@ const makeEditImpl = (
             cells[idx] = newCell
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
-            yield* fileSvc.writeAtomic(abs, newNotebook)
+            yield* assertRevisionUnchanged(fileSvc, pinned, revision)
+            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+              noFollowFinal: true
+            })
 
-            const displayPath = pathSvc.toDisplay(abs)
             return {
               displayPath,
               absPath: abs,
               cellIndex: idx,
               cellType: cell.cell_type,
               clearedOutputs,
-              diff,
-              oldPreview,
-              newPreview,
+              changed: true,
               notebook: newNotebook
             }
           })
-        )
-        .pipe(
-          Effect.mapError(unwrapFiberFailure<EditCellError>)
         )
     })
 
@@ -292,11 +313,14 @@ const makeEditImpl = (
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
       yield* pathSvc.ensureExists(abs)
+      const pinned = yield* pinRealPath(abs)
       return yield* fileSvc
         .withFileLock(
-          abs,
+          pinned,
           Effect.gen(function* () {
-            const notebook = yield* fileSvc.read(abs)
+            const snapshot = yield* fileSvc.readWithText(pinned)
+            const notebook = snapshot.notebook
+            const revision = contentHash(snapshot.text)
             const total = notebook.cells.length
 
             if (index !== undefined && index < 0) {
@@ -309,14 +333,23 @@ const makeEditImpl = (
             }
 
             const targetIdx = index === undefined || index >= total ? total : index
-            const newCell = buildNewCell(cellType, source)
-            const preview = firstLine(source)
+            const newCell = buildNewCell(
+              cellType,
+              source,
+              notebook.nbformat_minor ?? 0
+            )
+            const preview = firstLine(source).slice(0, 200)
 
+            const lexicalPaths = yield* permSvc.aliases(abs)
+            const pinnedPaths = yield* permSvc.aliases(pinned)
+            const permissionPaths = [
+              ...new Set([...lexicalPaths, ...pinnedPaths])
+            ]
             yield* permSvc.ask({
               kind: "edit",
               action: "ipynb_cell_insert",
-              patterns: [abs],
-              always: [abs],
+              patterns: permissionPaths,
+              always: permissionPaths,
               metadata: {
                 filePath: abs,
                 cellType,
@@ -331,7 +364,10 @@ const makeEditImpl = (
             cells.splice(targetIdx, 0, newCell)
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
-            yield* fileSvc.writeAtomic(abs, newNotebook)
+            yield* assertRevisionUnchanged(fileSvc, pinned, revision)
+            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+              noFollowFinal: true
+            })
 
             const displayPath = pathSvc.toDisplay(abs)
             return {
@@ -343,9 +379,6 @@ const makeEditImpl = (
               preview
             }
           })
-        )
-        .pipe(
-          Effect.mapError(unwrapFiberFailure<InsertCellError>)
         )
     })
 
@@ -366,11 +399,14 @@ const makeEditImpl = (
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
       yield* pathSvc.ensureExists(abs)
+      const pinned = yield* pinRealPath(abs)
       return yield* fileSvc
         .withFileLock(
-          abs,
+          pinned,
           Effect.gen(function* () {
-            const notebook = yield* fileSvc.read(abs)
+            const snapshot = yield* fileSvc.readWithText(pinned)
+            const notebook = snapshot.notebook
+            const revision = contentHash(snapshot.text)
             const total = notebook.cells.length
 
             if (cellIndex < 0 || cellIndex >= total) {
@@ -386,11 +422,16 @@ const makeEditImpl = (
             const cellType = cell.cell_type
             const deletedPreview = truncatePreview(cellSource(cell), 80)
 
+            const lexicalPaths = yield* permSvc.aliases(abs)
+            const pinnedPaths = yield* permSvc.aliases(pinned)
+            const permissionPaths = [
+              ...new Set([...lexicalPaths, ...pinnedPaths])
+            ]
             yield* permSvc.ask({
               kind: "edit",
               action: "ipynb_cell_delete",
-              patterns: [abs],
-              always: [abs],
+              patterns: permissionPaths,
+              always: permissionPaths,
               metadata: {
                 filePath: abs,
                 cellIndex,
@@ -404,7 +445,10 @@ const makeEditImpl = (
             cells.splice(cellIndex, 1)
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
-            yield* fileSvc.writeAtomic(abs, newNotebook)
+            yield* assertRevisionUnchanged(fileSvc, pinned, revision)
+            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+              noFollowFinal: true
+            })
 
             const displayPath = pathSvc.toDisplay(abs)
             return {
@@ -416,9 +460,6 @@ const makeEditImpl = (
               totalCells: total - 1
             }
           })
-        )
-        .pipe(
-          Effect.mapError(unwrapFiberFailure<DeleteCellError>)
         )
     })
 
@@ -440,11 +481,14 @@ const makeEditImpl = (
       const abs = yield* pathSvc.resolve(filePath)
       yield* pathSvc.ensureInsideWorktree(abs)
       yield* pathSvc.ensureExists(abs)
+      const pinned = yield* pinRealPath(abs)
       return yield* fileSvc
         .withFileLock(
-          abs,
+          pinned,
           Effect.gen(function* () {
-            const notebook = yield* fileSvc.read(abs)
+            const snapshot = yield* fileSvc.readWithText(pinned)
+            const notebook = snapshot.notebook
+            const revision = contentHash(snapshot.text)
             const total = notebook.cells.length
 
             if (fromIndex < 0 || fromIndex >= total) {
@@ -467,6 +511,8 @@ const makeEditImpl = (
 
             const clampedTo = Math.min(toIndex, total - 1)
             const displayPath = pathSvc.toDisplay(abs)
+            const cell = notebook.cells[fromIndex] as CellRaw
+            const cellType = cell.cell_type
 
             if (fromIndex === clampedTo) {
               return {
@@ -474,21 +520,26 @@ const makeEditImpl = (
                 absPath: abs,
                 fromIndex,
                 toIndex: clampedTo,
+                cellType,
                 totalCells: total
               }
             }
 
-            const cell = notebook.cells[fromIndex] as CellRaw
-
+            const lexicalPaths = yield* permSvc.aliases(abs)
+            const pinnedPaths = yield* permSvc.aliases(pinned)
+            const permissionPaths = [
+              ...new Set([...lexicalPaths, ...pinnedPaths])
+            ]
             yield* permSvc.ask({
               kind: "edit",
               action: "ipynb_cell_move",
-              patterns: [abs],
-              always: [abs],
+              patterns: permissionPaths,
+              always: permissionPaths,
               metadata: {
                 filePath: abs,
                 fromIndex,
                 toIndex: clampedTo,
+                cellType,
                 totalCells: total
               }
             })
@@ -498,19 +549,20 @@ const makeEditImpl = (
             cells.splice(clampedTo, 0, cell)
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
-            yield* fileSvc.writeAtomic(abs, newNotebook)
+            yield* assertRevisionUnchanged(fileSvc, pinned, revision)
+            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+              noFollowFinal: true
+            })
 
             return {
               displayPath,
               absPath: abs,
               fromIndex,
               toIndex: clampedTo,
+              cellType,
               totalCells: total
             }
           })
-        )
-        .pipe(
-          Effect.mapError(unwrapFiberFailure<MoveCellError>)
         )
     })
 

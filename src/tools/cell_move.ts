@@ -1,7 +1,7 @@
+import { sanitizeInline } from "../utils/markdown-safe.js"
 import { z } from "zod"
-import { tool } from "@opencode-ai/plugin"
-import { Effect } from "effect"
-import type { ToolContext } from "@opencode-ai/plugin"
+import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
+import type { ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
 import { errorToMessage } from "../domain/errors.js"
 
@@ -28,7 +28,7 @@ export const ipynbCellMoveTool = tool({
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context)
     try {
-      const result = await Effect.runPromise(
+      const result = await runToolEffect(
         services.edit.moveCell(
           input.filePath,
           input.fromIndex,
@@ -37,7 +37,7 @@ export const ipynbCellMoveTool = tool({
       )
       const lines: string[] = []
       lines.push(
-        `Moved cell from [${result.fromIndex}] to [${result.toIndex}] in \`${result.displayPath}\`.`
+        `Moved cell from [${result.fromIndex}] to [${result.toIndex}] in \`${sanitizeInline(result.displayPath)}\`.`
       )
       lines.push(`Total cells: ${result.totalCells} (unchanged)`)
       return {
@@ -47,10 +47,12 @@ export const ipynbCellMoveTool = tool({
           filePath: result.absPath,
           fromIndex: result.fromIndex,
           toIndex: result.toIndex,
+          cellType: result.cellType,
           totalCells: result.totalCells
         }
       }
     } catch (err) {
+      rethrowPermissionDenied(err)
       const message = errorToMessage(err)
       return {
         title: `Move cell ${input.fromIndex} to ${input.toIndex} in ${input.filePath} (error)`,

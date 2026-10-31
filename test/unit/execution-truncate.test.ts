@@ -3,8 +3,10 @@ import {
   truncateText,
   truncateTraceback,
   truncateCellSummary,
-  truncateRunResponse
+  truncateRunResponse,
+  cellSummaryChars
 } from "../../src/services/NotebookExecutionService.js"
+import { MAX_RUN_RESPONSE_CHARS } from "../../src/utils/limits.js"
 import type { RunResponse, CellExecutionSummary } from "../../src/domain/execution.js"
 
 const makeSummary = (overrides: Partial<CellExecutionSummary> = {}): CellExecutionSummary => ({
@@ -93,6 +95,24 @@ describe("truncateCellSummary", () => {
     expect(out.resultPreview?.length).toBeLessThanOrEqual(200)
   })
 
+
+  it("enforces one combined budget across stdout, stderr, result, and tracebacks", () => {
+    const summary = makeSummary({
+      stdout: "x".repeat(500),
+      stderr: "y".repeat(500),
+      resultPreview: "z".repeat(500),
+      errors: [
+        {
+          ename: "E",
+          evalue: "v",
+          traceback: ["t".repeat(500)]
+        }
+      ]
+    })
+    const out = truncateCellSummary(summary, 300)
+    expect(cellSummaryChars(out)).toBeLessThanOrEqual(300)
+  })
+
   it("truncates traceback in errors", () => {
     const summary = makeSummary({
       errors: [
@@ -104,7 +124,23 @@ describe("truncateCellSummary", () => {
       ]
     })
     const out = truncateCellSummary(summary, 50)
-    expect(out.errors?.[0]?.traceback[0]).toContain("truncated")
+    expect(cellSummaryChars(out)).toBeLessThanOrEqual(50)
+    expect(out.errors?.[0]?.traceback.join("").length ?? 0).toBeLessThanOrEqual(50)
+  })
+
+
+  it("caps ename/evalue without letting them bypass the cell budget", () => {
+    const summary = makeSummary({
+      errors: [
+        {
+          ename: "E".repeat(10_000),
+          evalue: "v".repeat(1_000_000),
+          traceback: ["t".repeat(10_000)]
+        }
+      ]
+    })
+    const out = truncateCellSummary(summary, 200)
+    expect(cellSummaryChars(out)).toBeLessThanOrEqual(200)
   })
 
   it("preserves executionCount and durationMs", () => {
@@ -185,6 +221,56 @@ describe("truncateRunResponse", () => {
     })
     const out = truncateRunResponse(response, 50)
     expect(out.error).toBeDefined()
-    expect(out.error?.traceback[0]).toContain("truncated")
+    expect(out.error?.traceback.join("").length ?? 0).toBeLessThanOrEqual(50)
   })
+  it("keeps the whole response under the hard response budget", () => {
+    const outputs = Array.from({ length: 100 }, (_, i) =>
+      makeSummary({
+        cellIndex: i,
+        stdout: "x".repeat(6_000)
+      })
+    )
+    const out = truncateRunResponse(makeResponse({ outputs }), 6_000)
+    const total = out.outputs.reduce(
+      (sum, summary) => sum + cellSummaryChars(summary),
+      0
+    )
+    expect(total).toBeLessThanOrEqual(MAX_RUN_RESPONSE_CHARS)
+  })
+
+  it("caps the top-level error evalue", () => {
+    const response = makeResponse({
+      success: false,
+      error: {
+        kind: "CellExecutionError",
+        cellIndex: 0,
+        ename: "E",
+        evalue: "v".repeat(1_000_000),
+        traceback: ["t".repeat(10_000)]
+      }
+    })
+    const out = truncateRunResponse(response, 200)
+    expect(out.error?.evalue.length ?? 0).toBeLessThanOrEqual(200)
+    expect(out.error?.traceback.join("").length ?? 0).toBeLessThanOrEqual(200)
+  })
+
+  it("caps the number of summaries and display MIME strings", () => {
+    const hugeMime = "image/" + "x".repeat(1_000_000)
+    const outputs = Array.from({ length: 2_000 }, (_, i) =>
+      makeSummary({
+        cellIndex: i,
+        displayData: [{ mime: hugeMime, sizeBytes: 1 }]
+      })
+    )
+    const out = truncateRunResponse(makeResponse({ outputs }), 6_000)
+    expect(out.outputs.length).toBeLessThanOrEqual(1_000)
+    expect(out.outputs[0]?.displayData?.[0]?.mime.length ?? 0).toBeLessThanOrEqual(250)
+    expect(
+      out.outputs.reduce((sum, item) => sum + cellSummaryChars(item), 0)
+    ).toBeLessThanOrEqual(MAX_RUN_RESPONSE_CHARS)
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(
+      MAX_RUN_RESPONSE_CHARS + 20_000
+    )
+  })
+
 })

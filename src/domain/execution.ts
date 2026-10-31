@@ -26,6 +26,8 @@ export const RunRequestSchema = z.object({
   kernel: z.string().optional(),
   timeoutMs: z.number().int().optional(),
   save: z.boolean().optional(),
+  includeRawOutputs: z.boolean().optional(),
+  kernelEnv: z.record(z.string(), z.string()).optional(),
   workingDirectory: z.string().optional(),
   maxOutputChars: z.number().int().optional()
 })
@@ -48,6 +50,7 @@ export const CellExecutionSummarySchema = z.object({
     )
     .optional(),
   rawOutputs: z.array(z.record(z.string(), z.unknown())).optional(),
+  rawOutputsOmitted: z.boolean().optional(),
   errors: z
     .array(
       z.object({

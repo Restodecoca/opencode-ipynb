@@ -1,7 +1,7 @@
+import { sanitizeInline } from "../utils/markdown-safe.js"
 import { z } from "zod"
-import { tool } from "@opencode-ai/plugin"
-import { Effect } from "effect"
-import type { ToolContext } from "@opencode-ai/plugin"
+import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
+import type { ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
 import { errorToMessage } from "../domain/errors.js"
 
@@ -37,7 +37,7 @@ export const ipynbCleanTool = tool({
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context)
     try {
-      const result = await Effect.runPromise(
+      const result = await runToolEffect(
         services.clean.clean(input.filePath, {
           clearOutputs: input.clearOutputs,
           clearExecutionCount: input.clearExecutionCount,
@@ -47,7 +47,7 @@ export const ipynbCleanTool = tool({
         })
       )
       const lines: string[] = []
-      lines.push(`Cleaned \`${result.displayPath}\`.`)
+      lines.push(`Cleaned \`${sanitizeInline(result.displayPath)}\`.`)
       lines.push(`Affected cells: ${result.affectedCells}`)
       lines.push(`Removed outputs: ${result.removedOutputs}`)
       lines.push(`Removed execution_count: ${result.removedExecutionCounts}`)
@@ -66,6 +66,7 @@ export const ipynbCleanTool = tool({
         }
       }
     } catch (err) {
+      rethrowPermissionDenied(err)
       const message = errorToMessage(err)
       return {
         title: `Clean ${input.filePath} (error)`,

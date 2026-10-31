@@ -1,16 +1,24 @@
 import { truncate, truncatePreview } from "../utils/truncate.js"
-import { humanBytes, isImageMime, estimateBase64Bytes } from "../utils/mime.js"
-import { stripAnsi } from "../utils/ansi.js"
+import {
+  humanBytes,
+  isAttachableImageMime,
+  isImageMime,
+  estimateBase64Bytes
+} from "../utils/mime.js"
+import { sanitizeTerminal } from "../utils/ansi.js"
+import { codeFence } from "../utils/fence.js"
+import { sanitizeInline, truncateMarkdown } from "../utils/markdown-safe.js"
 import { formatAttachment } from "../utils/attachments.js"
 import { detectOutputKind } from "../domain/output.js"
 import type { CellRaw } from "../domain/cell.js"
 import type { NotebookRaw } from "../domain/notebook.js"
-import { cellSource } from "../domain/notebook.js"
-import { analyzeExecutionOrder } from "../services/NotebookInspectService.js"
-import type { ToolAttachment } from "@opencode-ai/plugin"
+import { analyzeExecutionOrder } from "../utils/execution-order.js"
+import type { ToolAttachment } from "../tool.js"
 
 export interface OutputFormatOptions {
   readonly includeImages: boolean
+  /** Use the hard-limit hint when the response cap, not the user, wins. */
+  readonly hardCap?: boolean | undefined
   readonly saveImages?: boolean | undefined
   readonly maxOutputChars: number
   readonly maxTracebackChars: number
@@ -31,12 +39,16 @@ export interface FormattedOutput {
 
 const imageNotice = (mime: string, value: string): string => {
   const bytes = estimateBase64Bytes(value)
-  return `${mime}, ${humanBytes(bytes)}, omitted by default`
+  return `${sanitizeInline(mime)}, ${humanBytes(bytes)}, omitted by default`
 }
 
 const formatStream = (text: string, max: number): string => {
-  const t = truncate(text, max, { key: "stream", paramName: "maxOutputChars" })
-  return `\`\`\`\n${t.text}\n\`\`\``
+  const t = truncate(sanitizeTerminal(text), max, {
+    key: "stream",
+    paramName: "maxOutputChars"
+  })
+  const fence = codeFence(t.text)
+  return `${fence}\n${t.text}\n${fence}`
 }
 
 const outputTextToString = (value: unknown): string =>
@@ -61,22 +73,32 @@ const formatDisplay = (
     if (isImageMime(mime)) {
       if (typeof value === "string") {
         if (opts.includeImages) {
-          lines.push(`- ${mime}: (base64 omitted in v0.1; image attachment not yet supported)`)
+          lines.push(
+            `- ${sanitizeInline(mime)}: (base64 omitted; use ipynb_read with includeImages=true for attachments)`
+          )
         } else {
           lines.push(`- ${imageNotice(mime, value)}`)
         }
       } else {
-        lines.push(`- ${mime}: (unsupported value type)`)
+        lines.push(`- ${sanitizeInline(mime)}: (unsupported value type)`)
       }
     } else if (typeof value === "string") {
-      const t = truncate(value, opts.maxOutputChars, { key: "output", paramName: "maxOutputChars" })
-      lines.push(`- ${mime}:`)
-      lines.push(`\`\`\``)
+      const t = truncate(sanitizeTerminal(value), opts.maxOutputChars, {
+        key: "output",
+        paramName: "maxOutputChars"
+      })
+      lines.push(`- ${sanitizeInline(mime)}:`)
+      const fence = codeFence(t.text)
+      lines.push(fence)
       lines.push(t.text)
-      lines.push(`\`\`\``)
+      lines.push(fence)
     } else {
       const t = truncate(JSON.stringify(value, null, 2), opts.maxOutputChars, { key: "json", paramName: "maxOutputChars" })
-      lines.push(`- ${mime}: \`\`\`json\n${t.text}\n\`\`\``)
+      const fence = codeFence(t.text)
+      lines.push(`- ${sanitizeInline(mime)}:`)
+      lines.push(`${fence}json`)
+      lines.push(t.text)
+      lines.push(fence)
     }
   }
   return lines.join("\n")
@@ -96,25 +118,39 @@ const formatDisplayWithAttachments = async (
   for (const [mime, value] of Object.entries(data)) {
     if (isImageMime(mime)) {
       if (typeof value === "string") {
-        if (shouldSaveImage(optsInput)) {
+        if (shouldSaveImage(optsInput) && isAttachableImageMime(mime)) {
           const att = formatAttachment(mime, value)
           collector.attachments.push(att)
-          lines.push(`- ${mime}: (attached as image, ${humanBytes(Buffer.byteLength(value, "base64"))})`)
+          lines.push(
+            `- ${sanitizeInline(mime)}: (attached as image, ${humanBytes(Buffer.byteLength(value, "base64"))})`
+          )
+        } else if (shouldSaveImage(optsInput)) {
+          lines.push(
+            `- ${sanitizeInline(mime)}: (SVG cannot be attached; open the notebook output directly)`
+          )
         } else {
           lines.push(`- ${imageNotice(mime, value)}`)
         }
       } else {
-        lines.push(`- ${mime}: (unsupported value type)`)
+        lines.push(`- ${sanitizeInline(mime)}: (unsupported value type)`)
       }
     } else if (typeof value === "string") {
-      const t = truncate(value, opts.maxOutputChars, { key: "output", paramName: "maxOutputChars" })
-      lines.push(`- ${mime}:`)
-      lines.push(`\`\`\``)
+      const t = truncate(sanitizeTerminal(value), opts.maxOutputChars, {
+        key: "output",
+        paramName: "maxOutputChars"
+      })
+      lines.push(`- ${sanitizeInline(mime)}:`)
+      const fence = codeFence(t.text)
+      lines.push(fence)
       lines.push(t.text)
-      lines.push(`\`\`\``)
+      lines.push(fence)
     } else {
       const t = truncate(JSON.stringify(value, null, 2), opts.maxOutputChars, { key: "json", paramName: "maxOutputChars" })
-      lines.push(`- ${mime}: \`\`\`json\n${t.text}\n\`\`\``)
+      const fence = codeFence(t.text)
+      lines.push(`- ${sanitizeInline(mime)}:`)
+      lines.push(`${fence}json`)
+      lines.push(t.text)
+      lines.push(fence)
     }
   }
   return lines.join("\n")
@@ -127,22 +163,26 @@ const formatError = (
   maxChars: number,
   includeFullTraceback?: boolean
 ): string => {
-  const cleaned = traceback.map(stripAnsi).join("\n").trim()
-  const lines: string[] = [`**${ename}**: ${evalue}`]
+  const cleaned = traceback.map(sanitizeTerminal).join("\n").trim()
+  const lines: string[] = [
+    `**${sanitizeInline(ename)}**: ${sanitizeInline(evalue)}`
+  ]
   if (cleaned.length === 0) {
     return lines.join("\n")
   }
   if (includeFullTraceback) {
     lines.push("")
-    lines.push("```")
+    const fence = codeFence(cleaned)
+    lines.push(fence)
     lines.push(cleaned)
-    lines.push("```")
+    lines.push(fence)
   } else {
-    const t = truncate(cleaned, maxChars, { key: "traceback", paramName: "maxTracebackChars" })
+    const t = truncate(cleaned, maxChars, { key: "hard", paramName: "" })
     lines.push("")
-    lines.push("```")
+    const fence = codeFence(t.text)
+    lines.push(fence)
     lines.push(t.text)
-    lines.push("```")
+    lines.push(fence)
   }
   return lines.join("\n")
 }
@@ -207,7 +247,16 @@ export const formatOutputs = (
   if (sections.length === 0) {
     return "(no output)"
   }
-  return sections.join("\n\n")
+  const rendered = sections.join("\n\n")
+  return opts.includeFullTraceback === true
+    ? rendered
+    : truncateMarkdown(
+        rendered,
+        opts.maxOutputChars,
+        opts.hardCap === true
+          ? "\n... (truncated: hard response limit reached)"
+          : "\n... (truncated, use maxOutputChars to increase)"
+      )
 }
 
 export const formatOutputsDetailed = async (
@@ -271,23 +320,35 @@ export const formatOutputsDetailed = async (
   if (sections.length === 0) {
     return { rendered: "(no output)", attachments: collector.attachments }
   }
+  const rendered = sections.join("\n\n")
   return {
-    rendered: sections.join("\n\n"),
+    rendered:
+      opts.includeFullTraceback === true
+        ? rendered
+        : truncateMarkdown(
+            rendered,
+            opts.maxOutputChars,
+            opts.hardCap === true
+              ? "\n... (truncated: hard response limit reached)"
+              : "\n... (truncated, use maxOutputChars to increase)"
+          ),
     attachments: collector.attachments
   }
 }
 
 export const formatNotebookDiagnostics = (notebook: NotebookRaw, filePath: string): string => {
   const lines: string[] = []
-  lines.push(`Notebook: \`${filePath}\``)
+  lines.push(`Notebook: \`${sanitizeInline(filePath)}\``)
   lines.push(`nbformat: ${notebook.nbformat}${notebook.nbformat_minor !== undefined ? `.${notebook.nbformat_minor}` : ""}`)
   const ks = notebook.metadata.kernelspec
   if (ks) {
-    lines.push(`kernel: ${ks.display_name ?? ks.name ?? "?"}`)
+    lines.push(
+      `kernel: ${sanitizeInline(String(ks.display_name ?? ks.name ?? "?"))}`
+    )
   }
   const li = notebook.metadata.language_info
   if (li) {
-    lines.push(`language: ${li.name}`)
+    lines.push(`language: ${sanitizeInline(String(li.name))}`)
   }
   const codeCells = notebook.cells.filter((c) => c.cell_type === "code")
   const mdCells = notebook.cells.filter((c) => c.cell_type === "markdown")

@@ -28,20 +28,22 @@ describe("extractImportNames > multi-import lines", () => {
 })
 
 describe("extractImportNames > from-import lines", () => {
-  it("returns the imported name for 'from X import Y'", () => {
-    expect(extractImportNames("from pandas import DataFrame")).toEqual(["DataFrame"])
+  it("returns the source module for 'from X import Y'", () => {
+    expect(extractImportNames("from pandas import DataFrame")).toEqual(["pandas"])
   })
 
-  it("returns each name for 'from X import A, B as C' (alias dropped)", () => {
-    expect(extractImportNames("from foo import a, b as c")).toEqual(["a", "b"])
+  it("returns one source module for 'from X import A, B as C'", () => {
+    expect(extractImportNames("from foo import a, b as c")).toEqual(["foo"])
   })
 
-  it("preserves a dotted name in 'from X import y.z'", () => {
-    expect(extractImportNames("from x import y.z")).toEqual(["y.z"])
+  it("returns the source module for a dotted from-import", () => {
+    expect(extractImportNames("from x.y import z")).toEqual(["x"])
   })
 
-  it("returns only the imported name (not the source module)", () => {
-    expect(extractImportNames("from pandas import DataFrame")).not.toContain("pandas")
+  it("returns the source package, not the imported symbol", () => {
+    expect(extractImportNames("from sklearn.datasets import load_iris")).toEqual([
+      "sklearn"
+    ])
   })
 })
 
@@ -56,12 +58,59 @@ describe("extractImportNames > edge cases", () => {
 
   it("handles multiple import lines in one cell", () => {
     const src = "import numpy\nimport pandas as pd\nfrom sklearn import svm"
-    expect(extractImportNames(src).sort()).toEqual(["numpy", "pandas", "svm"])
+    expect(extractImportNames(src).sort()).toEqual(["numpy", "pandas", "sklearn"])
+  })
+
+  it("handles comments, parentheses, relative imports, and __future__", () => {
+    const src = [
+      "import numpy as np  # comment",
+      "from pandas import (",
+      "  DataFrame,",
+      "  Series",
+      ")",
+      "from .local import thing",
+      "from __future__ import annotations"
+    ].join("\n")
+    expect(extractImportNames(src).sort()).toEqual(["numpy", "pandas"])
   })
 
   it("handles a mix of 'import' and 'from' on separate lines", () => {
     const src = "import os, sys\nfrom collections import OrderedDict"
-    expect(extractImportNames(src).sort()).toEqual(["OrderedDict", "os", "sys"])
+    expect(extractImportNames(src).sort()).toEqual(["collections", "os", "sys"])
+  })
+})
+
+
+describe("extractImportNames > string bodies and statements", () => {
+  it("ignores import lines inside triple-quoted strings", () => {
+    const src = [
+      'doc = """',
+      "import fake_package",
+      "from another_fake import thing",
+      '"""',
+      "import real_package"
+    ].join("\n")
+    expect(extractImportNames(src)).toEqual(["real_package"])
+  })
+
+  it("stops at a semicolon-separated statement", () => {
+    expect(extractImportNames("import os; import fake")).toEqual(["os"])
+  })
+})
+
+
+describe("extractImportNames > linear parsing", () => {
+  it("handles 200k blank lines without quadratic scanning", () => {
+    const started = Date.now()
+    expect(extractImportNames("\n".repeat(200_000))).toEqual([])
+    expect(Date.now() - started).toBeLessThan(2_000)
+  })
+
+  it("handles thousands of unclosed parenthesized imports", () => {
+    const started = Date.now()
+    const result = extractImportNames("from a import (\n".repeat(20_000))
+    expect(result).toEqual(["a"])
+    expect(Date.now() - started).toBeLessThan(2_000)
   })
 })
 
@@ -86,5 +135,13 @@ describe("isStdlibModule", () => {
 
   it("returns false for third-party names", () => {
     expect(isStdlibModule("numpy")).toBe(false)
+  })
+})
+
+describe("extractImportNames > comment edge cases", () => {
+
+  it("ignores triple quotes inside comments and comment line continuations", () => {
+    expect(extractImportNames('# use """ in docs\nimport real\nx = """doc"""')).toEqual(["real"])
+    expect(extractImportNames('# trailing \\\nimport real')).toEqual(["real"])
   })
 })

@@ -26,9 +26,9 @@ setup is `uv pip install scikit-learn numpy` (or `pip install scikit-learn numpy
 ## Plugin walkthrough
 
 ```text
-ipynb_inspect({ filePath: "examples/classification/notebook.ipynb" })
-ipynb_read({ filePath: "examples/classification/notebook.ipynb", cellIndex: 5 })
-ipynb_run({ filePath: "examples/classification/notebook.ipynb", mode: "all", save: true })
+ipynb_inspect({ filePath: "test/integration/classification/notebook.ipynb" })
+ipynb_read({ filePath: "test/integration/classification/notebook.ipynb", cellIndex: 5 })
+ipynb_run({ filePath: "test/integration/classification/notebook.ipynb", mode: "all", save: true })
 ```
 
 After `ipynb_run`, the printed output is exactly:

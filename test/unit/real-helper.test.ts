@@ -7,7 +7,8 @@ import { Effect, Cause } from "effect"
 import { makePathService } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
 import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
-import { makePythonService, makeKernelManager } from "../../src/services/PythonService.js"
+import { makePythonService } from "../../src/services/PythonService.js"
+import { makeKernelManager } from "../../src/services/KernelManager.js"
 import { makeExecutionImpl } from "../../src/services/NotebookExecutionService.js"
 
 const pythonHas = (module: string): boolean => {
@@ -50,6 +51,34 @@ describeIf(
       })
       return makeExecutionImpl(pathSvc, fileSvc, permSvc, pythonSvc)
     }
+
+
+
+    it("rejects a range that starts past the last cell", async () => {
+      const result = await Effect.runPromiseExit(
+        buildExec(FIXTURES).execute(path.join(FIXTURES, "simple.ipynb"), {
+          mode: "range",
+          cellIndex: undefined,
+          start: 500,
+          end: 501,
+          kernel: undefined,
+          timeoutMs: 60_000,
+          save: false,
+          workingDirectory: undefined,
+          maxOutputChars: 4_000
+        })
+      )
+      expect(result._tag).toBe("Failure")
+    }, 60_000)
+
+    it("reports the Python environment including pip freeze", async () => {
+      const env = await Effect.runPromise(
+        buildExec(FIXTURES).reportEnv(path.join(FIXTURES, "simple.ipynb"))
+      )
+      expect(env.pythonVersion.length).toBeGreaterThan(0)
+      expect(env.pythonExecutable.length).toBeGreaterThan(0)
+      expect(env.pipFreeze.length).toBeGreaterThan(0)
+    }, 60_000)
 
     it("executes all cells in the sales fixture and returns the matplotlib image", async () => {
       const result = await Effect.runPromise(
@@ -232,7 +261,7 @@ describeIf(
         })
       )
       if (exit._tag === "Failure") {
-        const opt = Cause.failureOption(exit.cause)
+        const opt = Cause.findErrorOption(exit.cause)
         if (opt._tag !== "Some") throw new Error("expected a failure with a value")
         const e = opt.value as { _tag?: string; cellIndex?: number }
         expect(e._tag).toBe("NotebookExecution")
@@ -271,5 +300,142 @@ describeIf(
         fs.rmSync(dir, { recursive: true, force: true })
       }
     }, 120_000)
+
+    it("does not execute project json.py or pip.py during the env report", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-env-shadow-"))
+      const jsonMarker = path.join(dir, "JSON_PWNED")
+      const pipMarker = path.join(dir, "PIP_PWNED")
+      fs.writeFileSync(
+        path.join(dir, "json.py"),
+        `import pathlib\npathlib.Path(${JSON.stringify(jsonMarker)}).write_text("ran")\nraise SystemExit(0)\n`
+      )
+      fs.writeFileSync(
+        path.join(dir, "pip.py"),
+        `import pathlib\npathlib.Path(${JSON.stringify(pipMarker)}).write_text("ran")\nraise SystemExit(0)\n`
+      )
+      const previousPythonPath = process.env.PYTHONPATH
+      const previousTmp = process.env.TMPDIR
+      process.env.PYTHONPATH = dir
+      process.env.TMPDIR = dir
+      try {
+        const env = await Effect.runPromise(
+          buildExec(FIXTURES).reportEnv(path.join(FIXTURES, "simple.ipynb"))
+        )
+        expect(env.pipFreeze.length).toBeGreaterThan(0)
+        expect(fs.existsSync(jsonMarker)).toBe(false)
+        expect(fs.existsSync(pipMarker)).toBe(false)
+      } finally {
+        if (previousPythonPath === undefined) delete process.env.PYTHONPATH
+        else process.env.PYTHONPATH = previousPythonPath
+        if (previousTmp === undefined) delete process.env.TMPDIR
+        else process.env.TMPDIR = previousTmp
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }, 60_000)
+
+    it("still exposes PYTHONPATH to the notebook kernel", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-env-"))
+      const file = path.join(dir, "env.ipynb")
+      fs.writeFileSync(path.join(dir, "ipynb_env_mod.py"), "VALUE = 42\n")
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+          cells: [
+            {
+              cell_type: "code",
+              execution_count: null,
+              metadata: {},
+              outputs: [],
+              source: "import ipynb_env_mod\nprint(ipynb_env_mod.VALUE)"
+            }
+          ]
+        })
+      )
+      const previousPythonPath = process.env.PYTHONPATH
+      process.env.PYTHONPATH = dir
+      try {
+        const result = await Effect.runPromise(
+          buildExec(dir).execute(file, {
+            mode: "cell",
+            cellIndex: 0,
+            start: undefined,
+            end: undefined,
+            kernel: undefined,
+            timeoutMs: 60_000,
+            save: false,
+            workingDirectory: undefined,
+            maxOutputChars: 4_000
+          })
+        )
+        expect(result.response.outputs[0]?.stdout).toContain("42")
+      } finally {
+        if (previousPythonPath === undefined) delete process.env.PYTHONPATH
+        else process.env.PYTHONPATH = previousPythonPath
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }, 120_000)
+
+    it("kills a timed-out one-shot cell's descendants", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-oneshot-children-"))
+      const file = path.join(dir, "children.ipynb")
+      const pidFile = path.join(dir, "child.pid")
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+          cells: [
+            {
+              cell_type: "code",
+              execution_count: null,
+              metadata: {},
+              outputs: [],
+              source: `import subprocess, time\np = subprocess.Popen(["sleep", "300"])\nopen(${JSON.stringify(pidFile)}, "w").write(str(p.pid))\ntime.sleep(30)`
+            }
+          ]
+        })
+      )
+      try {
+        await Effect.runPromiseExit(
+          buildExec(dir).execute(file, {
+            mode: "cell",
+            cellIndex: 0,
+            start: undefined,
+            end: undefined,
+            kernel: undefined,
+            timeoutMs: 1_000,
+            save: false,
+            workingDirectory: undefined,
+            maxOutputChars: 4_000
+          })
+        )
+        const deadline = Date.now() + 6_000
+        let pid = 0
+        while (Date.now() < deadline) {
+          if (fs.existsSync(pidFile)) {
+            pid = Number(fs.readFileSync(pidFile, "utf8"))
+            if (pid > 0) break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        expect(pid).toBeGreaterThan(0)
+        let alive = true
+        while (Date.now() < deadline && alive) {
+          try {
+            process.kill(pid, 0)
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          } catch {
+            alive = false
+          }
+        }
+        expect(alive).toBe(false)
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }, 30_000)
   }
 )

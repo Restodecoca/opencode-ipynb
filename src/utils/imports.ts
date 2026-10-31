@@ -22,35 +22,45 @@ export const isStdlibModule = (name: string): boolean => STDLIB_MODULES.has(name
 
 export const isRelativeImport = (name: string): boolean => name.startsWith(".")
 
-const IMPORT_LINE_PATTERN = /^\s*(?:from\s+([\w.]+)\s+import\s+(.+)|import\s+(.+))/m
+const stripComment = (line: string): string => line.replace(/#.*$/, "")
 
-const stripAlias = (piece: string): string => {
-  const idx = piece.indexOf(" as ")
-  return (idx === -1 ? piece : piece.slice(0, idx)).trim()
-}
+const TRIPLE_DOUBLE = /"""[\s\S]*?"""/g
+const TRIPLE_SINGLE = /'''[\s\S]*?'''/g
 
+/**
+ * Extract the top-level modules imported by Python source. For
+ * `from pandas import DataFrame` the module is `pandas`, not `DataFrame`.
+ * This is intentionally a lightweight parser (not a Python AST); it handles
+ * aliases, comments, dotted modules, and parenthesized from-imports.
+ */
 export const extractImportNames = (source: string): string[] => {
   const names: string[] = []
-  const lines = source.split("\n")
-  for (const line of lines) {
-    if (line.trimStart().startsWith("#")) continue
-    const match = line.match(IMPORT_LINE_PATTERN)
-    if (!match) continue
-    if (match[1] !== undefined && match[2] !== undefined) {
-      for (const piece of match[2].split(",")) {
-        const trimmed = stripAlias(piece)
-        if (!trimmed) continue
-        names.push(trimmed)
-      }
+  // Strip triple-quoted bodies first; the line parser below never scans past
+  // a single line, so blank/whitespace-heavy notebooks stay linear.
+  const withoutCommentLines = source.replace(/^[ \t]*#[^\n]*$/gm, "")
+  const withoutStrings = withoutCommentLines
+    .replace(TRIPLE_DOUBLE, "")
+    .replace(TRIPLE_SINGLE, "")
+    .replace(/\\\r?\n/g, " ")
+  const fromPattern =
+    /^[ \t]*from[ \t]+([A-Za-z_][\w.]*|\.+[A-Za-z_][\w.]*)[ \t]+import\b/
+  const importPattern = /^[ \t]*import[ \t]+(.+)$/
+  for (const rawLine of withoutStrings.split("\n")) {
+    const line = stripComment(rawLine)
+    const fromMatch = fromPattern.exec(line)
+    if (fromMatch !== null) {
+      const module = fromMatch[1]!
+      if (module === "__future__" || isRelativeImport(module)) continue
+      names.push(module.split(".")[0]!)
       continue
     }
-    const rest = match[3]
-    if (rest === undefined) continue
-    for (const piece of rest.split(",")) {
-      const trimmed = stripAlias(piece)
-      if (!trimmed) continue
-      names.push(trimmed)
+    const importMatch = importPattern.exec(line)
+    if (importMatch === null) continue
+    for (const piece of importMatch[1]!.split(";")[0]!.split(",")) {
+      const module = piece.trim().split(/\s+as\s+/)[0]?.trim()
+      if (!module) continue
+      if (!isRelativeImport(module)) names.push(module)
     }
   }
-  return names
+  return [...new Set(names)]
 }

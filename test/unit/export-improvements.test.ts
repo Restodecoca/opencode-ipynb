@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolContext } from "../../src/tool.js"
 import { makePathService } from "../../src/services/PathService.js"
 import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
@@ -398,3 +398,332 @@ const extractSection = (text: string, heading: string): string[] => {
   const end = lines.findIndex((l, i) => i > start && l.startsWith("## "))
   return lines.slice(start + 1, end === -1 ? lines.length : end)
 }
+
+describe("NotebookExportService > write safety", () => {
+  it("refuses to overwrite the source notebook", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-self-"))
+    const file = path.join(dir, "notebook.ipynb")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), file)
+    const before = fs.readFileSync(file, "utf8")
+    const { exportSvc } = buildExport(dir, dir)
+    try {
+      const result = await Effect.runPromiseExit(
+        exportSvc.export(file, {
+          format: "markdown",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: file,
+          maxExportChars: 60_000
+        })
+      )
+      expect(result._tag).toBe("Failure")
+      expect(fs.readFileSync(file, "utf8")).toBe(before)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("writes the full export to disk while capping the tool output", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-full-"))
+    const file = path.join(dir, "notebook.ipynb")
+    const out = path.join(dir, "out.py")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: Array.from({ length: 80 }, (_, index) => ({
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: `value_${index} = "${"x".repeat(80)}"`
+        }))
+      })
+    )
+    const { exportSvc } = buildExport(dir, dir)
+    try {
+      const result = await runOrThrow(
+        exportSvc.export(file, {
+          format: "python",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: out,
+          maxExportChars: 200
+        })
+      )
+      expect(result.rendered.length).toBeGreaterThan(200)
+      expect(fs.statSync(out).size).toBe(result.rendered.length)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  it("creates nested outside directories when allowOutsideWorktree is enabled", async () => {
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-out-"))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-out-dir-"))
+    const source = path.join(worktree, "notebook.ipynb")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), source)
+    const out = path.join(outside, "nested", "out.md")
+    const pathSvc = makePathService({
+      directory: worktree,
+      worktree,
+      platform: process.platform,
+      allowOutsideWorktree: true
+    })
+    const fileSvc = makeNotebookFileService()
+    const permSvc = makePermissionService(makeFakeContext(worktree, worktree))
+    const exportSvc = makeExportImpl(pathSvc, fileSvc, permSvc)
+    try {
+      const result = await runOrThrow(
+        exportSvc.export(source, {
+          format: "markdown",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: out,
+          maxExportChars: 60_000
+        })
+      )
+      expect(fs.existsSync(out)).toBe(true)
+      expect(fs.readFileSync(out, "utf8").length).toBe(result.rendered.length)
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses to overwrite the source through a symlink alias", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-alias-"))
+    const source = path.join(dir, "notebook.txt")
+    const alias = path.join(dir, "alias.txt")
+    const body = JSON.parse(fs.readFileSync(path.join(FIXTURES, "simple.ipynb"), "utf8"))
+    fs.writeFileSync(source, JSON.stringify(body))
+    fs.symlinkSync(source, alias)
+    const before = fs.readFileSync(source, "utf8")
+    const { exportSvc } = buildExport(dir, dir)
+    try {
+      const result = await Effect.runPromiseExit(
+        exportSvc.export(alias, {
+          format: "markdown",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: source,
+          maxExportChars: 60_000
+        })
+      )
+      expect(result._tag).toBe("Failure")
+      expect(fs.readFileSync(source, "utf8")).toBe(before)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses to overwrite a different notebook through a symlinked output", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-victim-"))
+    const source = path.join(dir, "source.ipynb")
+    const victim = path.join(dir, "victim.ipynb")
+    const out = path.join(dir, "out.txt")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), source)
+    fs.copyFileSync(path.join(FIXTURES, "outputs.ipynb"), victim)
+    fs.symlinkSync(victim, out)
+    const before = fs.readFileSync(victim, "utf8")
+    const { exportSvc } = buildExport(dir, dir)
+    try {
+      const result = await Effect.runPromiseExit(
+        exportSvc.export(source, {
+          format: "python",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: out,
+          maxExportChars: 60_000
+        })
+      )
+      expect(result._tag).toBe("Failure")
+      expect(fs.readFileSync(victim, "utf8")).toBe(before)
+      expect(fs.lstatSync(out).isSymbolicLink()).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses a hidden .ipynb output name", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-hidden-"))
+    const source = path.join(dir, "source.ipynb")
+    const out = path.join(dir, ".ipynb")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), source)
+    const { exportSvc } = buildExport(dir, dir)
+    try {
+      const result = await Effect.runPromiseExit(
+        exportSvc.export(source, {
+          format: "markdown",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: out,
+          maxExportChars: 60_000
+        })
+      )
+      expect(result._tag).toBe("Failure")
+      expect(fs.existsSync(out)).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("writes the pinned target when the output symlink is swapped during the prompt", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-swap-"))
+    const source = path.join(dir, "source.ipynb")
+    const victim = path.join(dir, "victim.ipynb")
+    const target = path.join(dir, "target.txt")
+    const out = path.join(dir, "out.md")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), source)
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), victim)
+    fs.writeFileSync(target, "ORIGINAL")
+    fs.symlinkSync(target, out)
+    const victimBefore = fs.readFileSync(victim, "utf8")
+    const context = {
+      ...makeFakeContext(dir, dir),
+      ask: async () => {
+        fs.unlinkSync(out)
+        fs.symlinkSync(victim, out)
+      }
+    } as unknown as ToolContext
+    const pathSvc = makePathService({ directory: dir, worktree: dir, platform: process.platform })
+    const permSvc = makePermissionService(context)
+    const exportSvc = makeExportImpl(pathSvc, makeNotebookFileService(), permSvc)
+    try {
+      await runOrThrow(
+        exportSvc.export(source, {
+          format: "markdown",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: out,
+          maxExportChars: 1_000_000
+        })
+      )
+      expect(fs.readFileSync(victim, "utf8")).toBe(victimBefore)
+      expect(fs.readFileSync(target, "utf8")).toContain("source:")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses when the pinned target itself becomes a symlink during the prompt", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-pinned-swap-"))
+    const source = path.join(dir, "source.ipynb")
+    const victim = path.join(dir, "victim.ipynb")
+    const target = path.join(dir, "target.txt")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), source)
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), victim)
+    fs.writeFileSync(target, "ORIGINAL")
+    const victimBefore = fs.readFileSync(victim, "utf8")
+    const context = {
+      ...makeFakeContext(dir, dir),
+      ask: async () => {
+        fs.rmSync(target)
+        fs.symlinkSync(victim, target)
+      }
+    } as unknown as ToolContext
+    const pathSvc = makePathService({ directory: dir, worktree: dir, platform: process.platform })
+    const permSvc = makePermissionService(context)
+    const exportSvc = makeExportImpl(pathSvc, makeNotebookFileService(), permSvc)
+    try {
+      const exit = await Effect.runPromiseExit(
+        exportSvc.export(source, {
+          format: "markdown",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: target,
+          maxExportChars: 1_000_000
+        })
+      )
+      expect(exit._tag).toBe("Failure")
+      expect(fs.readFileSync(victim, "utf8")).toBe(victimBefore)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("writes full text outputs to the export file", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-full-"))
+    const source = path.join(dir, "source.ipynb")
+    const out = path.join(dir, "out.md")
+    fs.writeFileSync(
+      source,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: [
+          {
+            cell_type: "code",
+            execution_count: 1,
+            metadata: {},
+            outputs: [
+              { output_type: "stream", name: "stdout", text: "X".repeat(10_000) }
+            ],
+            source: "print('x')"
+          }
+        ]
+      })
+    )
+    const { exportSvc } = buildExport(dir, dir)
+    try {
+      await runOrThrow(
+        exportSvc.export(source, {
+          format: "markdown",
+          includeOutputs: true,
+          includeErrors: true,
+          outputPath: out,
+          maxExportChars: 1_000_000
+        })
+      )
+      const written = fs.readFileSync(out, "utf8")
+      expect(written).toContain("X".repeat(10_000))
+      expect(written).not.toContain("maxOutputChars to increase")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("inlines markdown-cell PNG attachments in the export", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-mdimg-"))
+    const source = path.join(dir, "source.ipynb")
+    const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3r9wAAAABJRU5ErkJggg=="
+    fs.writeFileSync(
+      source,
+      JSON.stringify({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: [
+          {
+            cell_type: "markdown",
+            metadata: {},
+            source: "![x](attachment:plot.png)",
+            attachments: { "plot.png": { "image/png": tinyPng } }
+          }
+        ]
+      })
+    )
+    const { exportSvc } = buildExport(dir, dir)
+    try {
+      const result = await runOrThrow(
+        exportSvc.export(source, {
+          format: "markdown",
+          includeOutputs: false,
+          includeErrors: true,
+          outputPath: undefined,
+          maxExportChars: 1_000_000
+        })
+      )
+      expect(result.rendered).toContain(`data:image/png;base64,${tinyPng}`)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+})

@@ -1,9 +1,9 @@
-import { describe, expect, it, afterEach } from "bun:test"
+import { describe, expect, it } from "bun:test"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import { Effect } from "effect"
-import { makeKernelManager } from "../../src/services/PythonService.js"
+import { makeKernelManager } from "../../src/services/KernelManager.js"
 import { pythonHas } from "../helpers.js"
 
 const HELPER = path.resolve("python", "ipynb_runner.py")
@@ -80,7 +80,7 @@ describeIf(!SKIP, "KernelManager", () => {
     }
   }, 120_000)
 
-  it("restart kills the old PID and starts a new one", async () => {
+  it("restart stops the old kernel; the next execute starts a new one", async () => {
     const { dir, file } = copyFixture("simple.ipynb")
     const mgr = makeManager(dir)
     try {
@@ -233,10 +233,269 @@ describeIf(!SKIP, "KernelManager", () => {
       cleanup(dir2)
     }
   }, 120_000)
-})
+  it("restarts when the requested kernel name changes", async () => {
+    const { dir, file } = copyFixture("simple.ipynb")
+    const mgr = makeManager(dir)
+    try {
+      await Effect.runPromise(
+        mgr.execute(file, {
+          filePath: file,
+          mode: "all",
+          timeoutMs: 60_000,
+          save: false,
+          maxOutputChars: 4_000
+        })
+      )
+      const pid1 = mgr.list()[0]?.pid
+      await Effect.runPromise(
+        mgr.execute(file, {
+          filePath: file,
+          mode: "all",
+          kernel: "python3",
+          timeoutMs: 60_000,
+          save: false,
+          maxOutputChars: 4_000
+        })
+      )
+      expect(mgr.list()[0]?.pid).not.toBe(pid1)
+    } finally {
+      await Effect.runPromise(mgr.disposeAll())
+      cleanup(dir)
+    }
+  }, 120_000)
 
-describeIf(SKIP, "KernelManager (skipped)", () => {
-  it("skipped because nbclient is not installed", () => {
-    expect(true).toBe(true)
-  })
+  it("aborts a warm kernel that is still starting", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-abort-"))
+    const file = path.join(dir, "slow.ipynb")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), file)
+    const helper = path.join(dir, "slow_helper.py")
+    fs.writeFileSync(
+      helper,
+      "import time\ntime.sleep(3)\nprint('{\"ready\":true}')\n",
+      "utf8"
+    )
+    const mgr = makeKernelManager({
+      pythonPath: "python",
+      helperPath: helper,
+      workingDirectory: dir,
+      defaultTimeoutMs: 60_000
+    })
+    const controller = new AbortController()
+    const started = Date.now()
+    setTimeout(() => controller.abort(), 100)
+    try {
+      const exit = await Effect.runPromiseExit(
+        mgr.execute(
+          file,
+          {
+            filePath: file,
+            mode: "all",
+            timeoutMs: 60_000,
+            save: false,
+            maxOutputChars: 4_000
+          },
+          undefined,
+          { signal: controller.signal }
+        )
+      )
+      expect(exit._tag).toBe("Failure")
+      expect(Date.now() - started).toBeLessThan(2_000)
+    } finally {
+      await Effect.runPromise(mgr.disposeAll())
+      cleanup(dir)
+    }
+  }, 30_000)
+
+  it("kills processes started by a timed-out cell", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-children-"))
+    const file = path.join(dir, "children.ipynb")
+    const pidFile = path.join(dir, "child.pid")
+    const writeNotebook = (source: string): void => {
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+          cells: [
+            {
+              cell_type: "code",
+              execution_count: null,
+              metadata: {},
+              outputs: [],
+              source
+            }
+          ]
+        })
+      )
+    }
+    writeNotebook('print("warm")')
+    const mgr = makeManager(dir)
+    try {
+      // Start the kernel with a generous timeout so CI startup jitter does
+      // not consume the short cell timeout used below.
+      await Effect.runPromise(
+        mgr.execute(file, {
+          filePath: file,
+          mode: "cell",
+          cellIndex: 0,
+          timeoutMs: 60_000,
+          save: false,
+          maxOutputChars: 4_000
+        })
+      )
+      writeNotebook(
+        `import subprocess, time\np = subprocess.Popen(["sleep", "300"])\nopen(${JSON.stringify(pidFile)}, "w").write(str(p.pid))\ntime.sleep(30)`
+      )
+      let failed = false
+      try {
+        await Effect.runPromise(
+          mgr.execute(file, {
+            filePath: file,
+            mode: "cell",
+            cellIndex: 0,
+            timeoutMs: 1_000,
+            save: false,
+            maxOutputChars: 4_000
+          })
+        )
+      } catch {
+        failed = true
+      }
+      expect(failed).toBe(true)
+      const deadline = Date.now() + 6_000
+      let pid = 0
+      while (Date.now() < deadline) {
+        if (fs.existsSync(pidFile)) {
+          pid = Number(fs.readFileSync(pidFile, "utf8"))
+          if (pid > 0) break
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      expect(pid).toBeGreaterThan(0)
+      let alive = true
+      while (Date.now() < deadline && alive) {
+        try {
+          process.kill(pid, 0)
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        } catch {
+          alive = false
+        }
+      }
+      expect(alive).toBe(false)
+    } finally {
+      await Effect.runPromise(mgr.disposeAll())
+      cleanup(dir)
+    }
+  }, 30_000)
+
+
+  it("uses one kernel for symlink aliases of the same notebook", async () => {
+    if (process.platform === "win32") return
+    const { dir, file } = copyFixture("simple.ipynb")
+    const alias = path.join(dir, "alias.ipynb")
+    fs.symlinkSync(file, alias)
+    const mgr = makeManager(dir)
+    try {
+      await Effect.runPromise(
+        mgr.execute(file, {
+          filePath: file,
+          mode: "all",
+          timeoutMs: 60_000,
+          save: false,
+          maxOutputChars: 4_000
+        })
+      )
+      await Effect.runPromise(
+        mgr.execute(alias, {
+          filePath: alias,
+          mode: "all",
+          timeoutMs: 60_000,
+          save: false,
+          maxOutputChars: 4_000
+        })
+      )
+      expect(mgr.list()).toHaveLength(1)
+      expect(mgr.isRunning(alias)).toBe(true)
+    } finally {
+      await Effect.runPromise(mgr.disposeAll())
+      cleanup(dir)
+    }
+  }, 120_000)
+  it("serializes concurrent kernel switches without overwriting live state", async () => {
+    const { dir, file } = copyFixture("simple.ipynb")
+    const mgr = makeManager(dir)
+    const run = (kernel: string | undefined) =>
+      Effect.runPromise(
+        mgr.execute(file, {
+          filePath: file,
+          mode: "all",
+          kernel,
+          timeoutMs: 60_000,
+          save: false,
+          maxOutputChars: 4_000
+        })
+      )
+    try {
+      await run(undefined)
+      const results = await Promise.allSettled([run("python3"), run(undefined)])
+      // Switching the kernel is disruptive: one in-flight request may be
+      // rejected, but the manager must keep exactly one tracked kernel and
+      // must not leak the replaced helper process.
+      expect(results.some((result) => result.status === "fulfilled")).toBe(true)
+      expect(mgr.list()).toHaveLength(1)
+      expect(mgr.stats().liveKernels).toBe(1)
+    } finally {
+      await Effect.runPromise(mgr.disposeAll())
+      cleanup(dir)
+    }
+  }, 120_000)
+
+  it("preserves UTF-8 split across stdout chunks", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-utf8-"))
+    const file = path.join(dir, "n.ipynb")
+    const helper = path.join(dir, "fake_helper.py")
+    fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), file)
+    fs.writeFileSync(
+      helper,
+      `import json, os, sys, time
+sys.stdin.readline()
+print(json.dumps({"ready": True, "pid": os.getpid(), "kernelPid": 424242}), flush=True)
+req = json.loads(sys.stdin.readline())
+payload = json.dumps({"id": req["id"], "success": True, "executedCells": [], "durationMs": 1, "outputs": [{"cellIndex": 0, "status": "ok", "stdout": "\u00e9"}]}, ensure_ascii=False).encode()
+marker = "\u00e9".encode()
+idx = payload.find(marker)
+sys.stdout.buffer.write(payload[:idx + 1])
+sys.stdout.buffer.flush()
+time.sleep(0.05)
+sys.stdout.buffer.write(payload[idx + 1:] + bytes([10]))
+sys.stdout.buffer.flush()
+`,
+      "utf8"
+    )
+    const mgr = makeKernelManager({
+      pythonPath: "python",
+      helperPath: helper,
+      workingDirectory: dir,
+      defaultTimeoutMs: 10_000
+    })
+    try {
+      const response = await Effect.runPromise(
+        mgr.execute(file, {
+          filePath: file,
+          mode: "cell",
+          cellIndex: 0,
+          timeoutMs: 10_000,
+          save: false,
+          maxOutputChars: 4_000
+        })
+      )
+      expect(response.outputs[0]?.stdout).toBe("é")
+      expect(response.outputs[0]?.stdout?.includes("\uFFFD")).toBe(false)
+    } finally {
+      await Effect.runPromise(mgr.disposeAll())
+      cleanup(dir)
+    }
+  }, 30_000)
+
 })

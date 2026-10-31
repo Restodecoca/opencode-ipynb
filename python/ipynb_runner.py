@@ -1,4 +1,4 @@
-"""Real notebook runner for the opencode-ipynb plugin (v0.3 + v0.4 + v1.0).
+"""Real notebook runner for the opencode-ipynb plugin.
 
 Reads a JSON request from stdin and writes a JSON response to stdout. Modes:
 
@@ -7,7 +7,7 @@ Reads a JSON request from stdin and writes a JSON response to stdout. Modes:
 - ``env``: read the notebook's kernelspec / language_info, dump the
   current Python interpreter version + executable + platform, and run
   ``pip freeze --local``. Does NOT require nbformat / nbclient.
-- ``serve`` (v1.0, warm-kernel mode): enter a long-lived loop. The first
+- ``serve`` (warm-kernel mode): enter a long-lived loop. The first
   request carries ``filePath`` (and optional ``kernel`` / ``timeoutMs``);
   subsequent requests are normal ``cell`` / ``all`` / ``range`` / ``from``
   / ``env`` requests. Each request has an integer ``id``; the response
@@ -23,16 +23,30 @@ venv still produces a structured error instead of a traceback.
 
 from __future__ import annotations
 
+MAX_ERROR_TEXT = 8_000
+MAX_RAW_OUTPUT_BYTES = 32 * 1024 * 1024
+MAX_RAW_OUTPUT_TOTAL_BYTES = 48 * 1024 * 1024
+
 import json
 import os
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from typing import Any, Dict, Iterable, List, Optional
 
 
 PROBE_DEPS = ("nbformat", "nbclient", "jupyter_client", "ipykernel")
+
+# Windows redirected stdio often uses the locale code page; requests and
+# responses are UTF-8 JSON, so force it explicitly.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="strict")
+    except Exception:
+        pass
 
 
 def _read_request() -> Dict[str, Any]:
@@ -83,15 +97,100 @@ def _read_notebook_raw(file_path: str) -> Dict[str, Any]:
     return data
 
 
+PIP_FREEZE_CODE = (
+    "import sys; "
+    "sys.path[:] = [p for p in sys.path if p not in ('', '.')]; "
+    "from pip._internal.cli.main import main; "
+    "raise SystemExit(main(['freeze', '--local']))"
+)
+
+
 def _run_pip_freeze(python_executable: str, timeout_s: int = 30) -> List[str]:
-    """Run ``pip freeze --local`` and return a list of ``package==version`` strings."""
+    """Run ``pip freeze --local`` without importing project files.
+
+    ``python -m pip`` puts the current directory first on sys.path, so a
+    repository-supplied ``pip.py`` would execute during a read-only report.
+    Use ``-c`` plus explicit sys.path sanitation instead of ``-m``: this
+    keeps user-site pip available (unlike ``-I``) while removing the cwd
+    entries before pip is imported. ``-E`` drops PYTHONPATH/PYTHONHOME.
+    """
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
     raw = subprocess.check_output(
-        [python_executable, "-m", "pip", "freeze", "--local"],
+        [python_executable, "-E", "-c", PIP_FREEZE_CODE],
+        cwd=tempfile.gettempdir(),
+        env=env,
         stderr=subprocess.PIPE,
         timeout=timeout_s,
     )
     text = raw.decode("utf-8", errors="replace")
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _kernel_pid(client: Any) -> Optional[int]:
+    km = getattr(client, "km", None)
+    provisioner = getattr(km, "provisioner", None)
+    pid = getattr(provisioner, "pid", None)
+    if not isinstance(pid, int):
+        pid = getattr(km, "kernel_pid", None)
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
+def _kill_kernel_process_group(client: Any) -> None:
+    """Kill the kernel and every process it started.
+
+    Jupyter starts the kernel in its own session, so killing the helper's
+    process group is not enough. The kernel is the leader of its own group.
+    """
+    pid = _kernel_pid(client)
+    if pid is None:
+        return
+    kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+    try:
+        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            os.killpg(os.getpgid(pid), kill_signal)
+        else:
+            os.kill(pid, kill_signal)
+    except ProcessLookupError:
+        pass
+    except Exception:
+        try:
+            os.kill(pid, kill_signal)
+        except Exception:
+            pass
+
+
+_ACTIVE_CLIENT: Any = None
+
+
+def _handle_sigterm(signum: int, frame: Any) -> None:
+    """Best-effort cleanup when the wrapper aborts a one-shot/serve run."""
+    try:
+        if _ACTIVE_CLIENT is not None:
+            _kill_kernel_process_group(_ACTIVE_CLIENT)
+    finally:
+        os._exit(143)
+
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
+
+
+def _kernel_env(req: Dict[str, Any]) -> Dict[str, str]:
+    """Environment for the notebook kernel only.
+
+    The helper process itself runs with PYTHONPATH/PYTHONHOME removed so a
+    project cannot shadow stdlib imports. The original values are carried in
+    the request and restored for the kernel, where user code is expected to
+    run with the environment the user configured.
+    """
+    env = {key: value for key, value in os.environ.items()}
+    extra = req.get("kernelEnv")
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if isinstance(key, str) and isinstance(value, str):
+                env[key] = value
+    return env
 
 
 def _build_env_report(
@@ -204,7 +303,9 @@ def _select_cell_indexes(req: Dict[str, Any], total: int) -> List[int]:
     """Return the cell indexes (across the WHOLE notebook) the caller wants to run."""
     mode = req["mode"]
     if total <= 0:
-        return []
+        if mode == "all":
+            return []
+        raise ValueError("notebook has no cells")
     if mode == "all":
         return list(range(total))
     if mode == "cell":
@@ -223,6 +324,10 @@ def _select_cell_indexes(req: Dict[str, Any], total: int) -> List[int]:
             raise ValueError("mode='range' requires integer start and end")
         if start < 0 or end < 0 or start > end:
             raise ValueError(f"invalid range start={start} end={end}")
+        if start >= total:
+            raise ValueError(
+                f"range start {start} out of range (notebook has {total} cells)"
+            )
         return list(range(start, min(end, total - 1) + 1))
     if mode == "from":
         idx = req.get("cellIndex")
@@ -297,6 +402,7 @@ def _build_cell_summary(
     status: str,
     max_output_chars: int,
     duration_ms: int,
+    include_raw: bool = False,
 ) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "cellIndex": cell_index,
@@ -308,8 +414,15 @@ def _build_cell_summary(
         if ec is not None:
             summary["executionCount"] = int(ec)
     raw_outputs = list(cell.get("outputs", []) or [])
-    if raw_outputs:
-        summary["rawOutputs"] = raw_outputs
+    if raw_outputs and include_raw:
+        try:
+            encoded = json.dumps(raw_outputs)
+        except Exception:
+            encoded = ""
+        if len(encoded) <= MAX_RAW_OUTPUT_BYTES:
+            summary["rawOutputs"] = raw_outputs
+        else:
+            summary["rawOutputsOmitted"] = True
     for out in raw_outputs:
         addition = _summarize_output(out)
         _merge_summaries(summary, addition)
@@ -320,6 +433,19 @@ def _build_cell_summary(
             summary[key] = summary[key][:max_output_chars] + (
                 f"\n... (truncated, use maxOutputChars to increase)"
             )
+    for err in summary.get("errors") or []:
+        for key in ("ename", "evalue"):
+            value = str(err.get(key) or "")
+            if len(value) > MAX_ERROR_TEXT:
+                err[key] = value[:MAX_ERROR_TEXT] + "\n... (truncated)"
+            else:
+                err[key] = value
+        tb = [str(line) for line in (err.get("traceback") or [])]
+        joined = "\n".join(tb)
+        if len(joined) > MAX_ERROR_TEXT:
+            err["traceback"] = [joined[:MAX_ERROR_TEXT] + "\n... (truncated)"]
+        else:
+            err["traceback"] = tb
     return summary
 
 
@@ -342,9 +468,12 @@ def _error_response(
         "error": {
             "kind": kind,
             "cellIndex": cell_index,
-            "ename": ename,
-            "evalue": evalue,
-            "traceback": list(traceback_lines or []),
+            "ename": str(ename)[:MAX_ERROR_TEXT],
+            "evalue": str(evalue)[:MAX_ERROR_TEXT],
+            "traceback": [
+                line[:MAX_ERROR_TEXT]
+                for line in list(traceback_lines or [])[:200]
+            ],
         },
     }
     if request_id is not None:
@@ -363,6 +492,23 @@ def _resolve_kernel_name(req: Dict[str, Any], nb: Any) -> Optional[str]:
             if isinstance(kn, str):
                 return kn
     return None
+
+
+def _cap_raw_outputs(outputs: List[Dict[str, Any]]) -> None:
+    remaining = MAX_RAW_OUTPUT_TOTAL_BYTES
+    for summary in outputs:
+        raw = summary.get("rawOutputs")
+        if raw is None:
+            continue
+        try:
+            size = len(json.dumps(raw))
+        except Exception:
+            size = MAX_RAW_OUTPUT_TOTAL_BYTES + 1
+        if size > remaining:
+            summary.pop("rawOutputs", None)
+            summary["rawOutputsOmitted"] = True
+        else:
+            remaining -= size
 
 
 def _run_nbclient(
@@ -422,10 +568,14 @@ def _run_nbclient(
         # into the kernel subprocess Popen call. Execute the selected cells
         # explicitly so mode=cell/range/from never runs cells outside the
         # requested slice.
-        with client.setup_kernel():
+        global _ACTIVE_CLIENT
+        _ACTIVE_CLIENT = client
+        with client.setup_kernel(env=_kernel_env(req)):
             for idx in target_code_cells:
                 client.execute_cell(nb.cells[idx], idx)
     except Exception as exc:
+        if type(exc).__name__ == "CellTimeoutError":
+            _kill_kernel_process_group(client)
         failing_cell_index = getattr(exc, "cell_index", None)
         if not isinstance(failing_cell_index, int) or failing_cell_index < 0:
             msg = str(exc)
@@ -461,16 +611,22 @@ def _run_nbclient(
                 status="ok",
                 max_output_chars=int(req.get("maxOutputChars", 12_000)),
                 duration_ms=0,
+                include_raw=bool(req.get("save", False) or req.get("includeRawOutputs", False)),
             )
         )
 
+    _cap_raw_outputs(outputs)
     return {
         "success": True,
-        "executedCells": cell_indexes,
+        "executedCells": target_code_cells,
         "durationMs": int((time.time() - started) * 1000),
         "saved": False,
         "outputs": outputs,
     }
+
+
+class KernelBroken(Exception):
+    """Raised when a timed-out cell requires a fresh kernel."""
 
 
 def _run_serve_request(
@@ -508,6 +664,27 @@ def _run_serve_request(
             type(exc).__name__,
             str(exc),
             -1,
+            request_id=req_id,
+        )
+
+    # A warm kernel keeps Python state, but the notebook source must follow
+    # edits on disk. Reload the cells before every request; the kernel client
+    # keeps its process and namespace, while the NotebookNode is refreshed.
+    try:
+        import nbformat  # type: ignore
+
+        fresh = nbformat.read(file_path, as_version=4)
+        nb.cells = fresh.cells
+        nb.metadata = fresh.metadata
+    except Exception as exc:
+        return _error_response(
+            req,
+            started,
+            "PythonRunnerError",
+            type(exc).__name__,
+            f"Failed to reload notebook {file_path}: {exc}",
+            -1,
+            traceback.format_exception(exc),
             request_id=req_id,
         )
 
@@ -554,7 +731,7 @@ def _run_serve_request(
     if not target_code_cells:
         response = {
             "success": True,
-            "executedCells": cell_indexes,
+            "executedCells": [],
             "durationMs": int((time.time() - started) * 1000),
             "outputs": [],
         }
@@ -563,6 +740,12 @@ def _run_serve_request(
         return response
 
     timeout_s = max(1, int(req.get("timeoutMs", 120_000) / 1000))
+    # The initial client timeout belongs to the first serve request. Update it
+    # per request so a short first call does not freeze every later timeout.
+    try:
+        client.timeout = timeout_s
+    except Exception:
+        pass
     # Per-cell durations: capture start/end around each `execute_cell` call so
     # the `cell_duration_ms` field reflects what actually happened, not the
     # batch total attributed to the first cell.
@@ -589,7 +772,7 @@ def _run_serve_request(
                     break
             else:
                 failing_cell_index = target_code_cells[0] if target_code_cells else -1
-        return _error_response(
+        response = _error_response(
             req,
             started,
             "CellExecutionError",
@@ -599,6 +782,21 @@ def _run_serve_request(
             traceback.format_exception(exc),
             request_id=req_id,
         )
+        if type(exc).__name__ == "CellTimeoutError":
+            # nbclient leaves the cell running. Kill the kernel and its
+            # descendants so the next request starts clean instead of
+            # queueing behind a runaway cell.
+            _kill_kernel_process_group(client)
+            try:
+                client.shutdown_kernel()
+            except Exception:
+                pass
+            try:
+                client.cleanup_kernel()
+            except Exception:
+                pass
+            raise KernelBroken("kernel stopped after a cell timeout") from exc
+        return response
 
     outputs: List[Dict[str, Any]] = []
     for i in cell_indexes:
@@ -612,12 +810,14 @@ def _run_serve_request(
                 status="ok",
                 max_output_chars=int(req.get("maxOutputChars", 12_000)),
                 duration_ms=cell_durations_ms.get(i, 0),
+                include_raw=bool(req.get("save", False) or req.get("includeRawOutputs", False)),
             )
         )
 
+    _cap_raw_outputs(outputs)
     response = {
         "success": True,
-        "executedCells": cell_indexes,
+        "executedCells": target_code_cells,
         "durationMs": int((time.time() - started) * 1000),
         "outputs": outputs,
     }
@@ -627,7 +827,7 @@ def _run_serve_request(
 
 
 def _serve_mode(init_req: Dict[str, Any]) -> int:
-    """v1.0 warm-kernel loop. Initializes one kernel and serves NDJSON
+    """Warm-kernel loop. Initializes one kernel and serves NDJSON
     requests until ``{"mode": "shutdown"}`` or EOF on stdin.
     """
     file_path = init_req.get("filePath")
@@ -698,10 +898,24 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
         # NOT use ``setup_kernel`` (a context manager) because we want the
         # kernel to outlive the first request — subsequent requests reuse
         # the same kernel client via ``client.execute_cell``.
+        global _ACTIVE_CLIENT
+        _ACTIVE_CLIENT = client
         client.km = client.create_kernel_manager()
-        client.start_new_kernel()
+        client.start_new_kernel(env=_kernel_env(init_req))
         client.start_new_kernel_client()
     except Exception as exc:
+        # A kernel may already be running even though the client failed.
+        # Jupyter starts it in its own session, so the parent cannot reap it
+        # from the helper's process group.
+        try:
+            client.shutdown_kernel(now=True)
+        except Exception:
+            pass
+        try:
+            _kill_kernel_process_group(client)
+        except Exception:
+            pass
+        _ACTIVE_CLIENT = None
         _write_response(
             _error_response(
                 init_req,
@@ -718,6 +932,7 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
     ready_response: Dict[str, Any] = {
         "ready": True,
         "pid": os.getpid(),
+        "kernelPid": _kernel_pid(client),
         "kernelName": kernel_name,
         "durationMs": int((time.time() - started) * 1000),
     }
@@ -764,6 +979,20 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
 
             try:
                 response = _run_serve_request(req, client, nb, file_path)
+            except KernelBroken as exc:
+                req_id = req.get("id") if isinstance(req.get("id"), int) else None
+                _write_response(
+                    _error_response(
+                        req,
+                        time.time(),
+                        "PythonRunnerError",
+                        "KernelRestartRequired",
+                        str(exc),
+                        -1,
+                        request_id=req_id,
+                    )
+                )
+                break
             except Exception as exc:
                 req_id = req.get("id") if isinstance(req.get("id"), int) else None
                 response = _error_response(
@@ -782,6 +1011,7 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        _kill_kernel_process_group(client)
         try:
             client.shutdown_kernel()
         except Exception:

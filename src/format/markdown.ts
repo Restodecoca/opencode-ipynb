@@ -2,7 +2,12 @@ import { truncate } from "../utils/truncate.js"
 import { cellSource } from "../domain/notebook.js"
 import type { CellRaw, CodeCellRaw, MarkdownCellRaw, RawCellRaw } from "../domain/cell.js"
 import { formatOutputs, formatOutputsDetailed, type FormattedOutput, type OutputFormatOptions } from "./outputs.js"
-import type { ToolAttachment } from "@opencode-ai/plugin"
+import type { ToolAttachment } from "../tool.js"
+import { formatAttachment } from "../utils/attachments.js"
+import { isAttachableImageMime } from "../utils/mime.js"
+import { codeFence } from "../utils/fence.js"
+import { sanitizeTerminal } from "../utils/ansi.js"
+import { truncateMarkdown } from "../utils/markdown-safe.js"
 
 export interface MarkdownReadOptions {
   readonly includeOutputs: boolean
@@ -58,17 +63,32 @@ const formatCodeCell = (cell: CodeCellRaw, index: number, opts: MarkdownReadOpti
   lines.push(`Type: code`)
   lines.push(`Execution: ${cell.execution_count ?? "not run"}`)
   if (opts.includeMetadata && Object.keys(cell.metadata).length > 0) {
-    lines.push(`Metadata: \`\`\`json\n${JSON.stringify(cell.metadata, null, 2)}\n\`\`\``)
+    const metadata = truncate(JSON.stringify(cell.metadata, null, 2), opts.maxSourceChars, {
+      key: "json",
+      paramName: "maxSourceChars"
+    })
+    const fence = codeFence(metadata.text)
+    lines.push("Metadata:")
+    lines.push(`${fence}json`)
+    lines.push(metadata.text)
+    lines.push(fence)
   }
   const source = cellSource(cell)
-  const t = truncate(source, opts.maxSourceChars, { key: "source", paramName: "maxSourceChars" })
+  const t = truncate(sanitizeTerminal(source), opts.maxSourceChars, {
+    key: "source",
+    paramName: "maxSourceChars"
+  })
   lines.push("")
   lines.push("Source:")
-  lines.push("```python")
+  const fence = codeFence(t.text)
+  lines.push(`${fence}python`)
   lines.push(t.text)
-  lines.push("```")
+  lines.push(fence)
   if (opts.includeOutputs) {
-    const formatted = formatOutputs(cell, opts.output)
+    const outputs = opts.includeErrors
+      ? cell.outputs
+      : cell.outputs.filter((output) => output["output_type"] !== "error")
+    const formatted = formatOutputs({ ...cell, outputs }, opts.output)
     if (formatted && formatted !== "(no output)") {
       lines.push("")
       lines.push("Outputs:")
@@ -81,7 +101,7 @@ const formatCodeCell = (cell: CodeCellRaw, index: number, opts: MarkdownReadOpti
       lines.push("")
       lines.push("Errors:")
       lines.push("")
-      lines.push(formatOutputs({ ...cell, outputs: errOutputs }, { ...opts.output, maxOutputChars: opts.maxSourceChars }))
+      lines.push(formatOutputs({ ...cell, outputs: errOutputs }, { ...opts.output, maxOutputChars: opts.output.maxOutputChars ?? 6_000 }))
     }
   }
   return lines.join("\n")
@@ -98,17 +118,35 @@ const formatCodeCellDetailed = async (
   lines.push(`Type: code`)
   lines.push(`Execution: ${cell.execution_count ?? "not run"}`)
   if (opts.includeMetadata && Object.keys(cell.metadata).length > 0) {
-    lines.push(`Metadata: \`\`\`json\n${JSON.stringify(cell.metadata, null, 2)}\n\`\`\``)
+    const metadata = truncate(JSON.stringify(cell.metadata, null, 2), opts.maxSourceChars, {
+      key: "json",
+      paramName: "maxSourceChars"
+    })
+    const fence = codeFence(metadata.text)
+    lines.push("Metadata:")
+    lines.push(`${fence}json`)
+    lines.push(metadata.text)
+    lines.push(fence)
   }
   const source = cellSource(cell)
-  const t = truncate(source, opts.maxSourceChars, { key: "source", paramName: "maxSourceChars" })
+  const t = truncate(sanitizeTerminal(source), opts.maxSourceChars, {
+    key: "source",
+    paramName: "maxSourceChars"
+  })
   lines.push("")
   lines.push("Source:")
-  lines.push("```python")
+  const fence = codeFence(t.text)
+  lines.push(`${fence}python`)
   lines.push(t.text)
-  lines.push("```")
+  lines.push(fence)
   if (opts.includeOutputs) {
-    const formatted: FormattedOutput = await formatOutputsDetailed(cell, opts.output)
+    const outputs = opts.includeErrors
+      ? cell.outputs
+      : cell.outputs.filter((output) => output["output_type"] !== "error")
+    const formatted: FormattedOutput = await formatOutputsDetailed(
+      { ...cell, outputs },
+      opts.output
+    )
     if (formatted.rendered && formatted.rendered !== "(no output)") {
       lines.push("")
       lines.push("Outputs:")
@@ -121,7 +159,7 @@ const formatCodeCellDetailed = async (
     if (errOutputs.length > 0) {
       const formatted: FormattedOutput = await formatOutputsDetailed(
         { ...cell, outputs: errOutputs },
-        { ...opts.output, maxOutputChars: opts.maxSourceChars }
+        { ...opts.output, maxOutputChars: opts.output.maxOutputChars ?? 6_000 }
       )
       lines.push("")
       lines.push("Errors:")
@@ -138,12 +176,24 @@ const formatMarkdownCell = (cell: MarkdownCellRaw, index: number, opts: Markdown
   lines.push(`### Cell [${index}]`)
   lines.push(`Type: markdown`)
   if (opts.includeMetadata && Object.keys(cell.metadata).length > 0) {
-    lines.push(`Metadata: \`\`\`json\n${JSON.stringify(cell.metadata, null, 2)}\n\`\`\``)
+    const metadata = truncate(JSON.stringify(cell.metadata, null, 2), opts.maxSourceChars, {
+      key: "json",
+      paramName: "maxSourceChars"
+    })
+    const fence = codeFence(metadata.text)
+    lines.push("Metadata:")
+    lines.push(`${fence}json`)
+    lines.push(metadata.text)
+    lines.push(fence)
   }
   const source = cellSource(cell)
-  const t = truncate(source, opts.maxSourceChars, { key: "source", paramName: "maxSourceChars" })
+  const text = truncateMarkdown(
+    sanitizeTerminal(source),
+    opts.maxSourceChars,
+    "\n... (source truncated, use maxSourceChars to increase)"
+  )
   lines.push("")
-  lines.push(t.text)
+  lines.push(text)
   return lines.join("\n")
 }
 
@@ -152,14 +202,27 @@ const formatRawCell = (cell: RawCellRaw, index: number, opts: MarkdownReadOption
   lines.push(`### Cell [${index}]`)
   lines.push(`Type: raw`)
   if (opts.includeMetadata && Object.keys(cell.metadata).length > 0) {
-    lines.push(`Metadata: \`\`\`json\n${JSON.stringify(cell.metadata, null, 2)}\n\`\`\``)
+    const metadata = truncate(JSON.stringify(cell.metadata, null, 2), opts.maxSourceChars, {
+      key: "json",
+      paramName: "maxSourceChars"
+    })
+    const fence = codeFence(metadata.text)
+    lines.push("Metadata:")
+    lines.push(`${fence}json`)
+    lines.push(metadata.text)
+    lines.push(fence)
   }
   const source = cellSource(cell)
-  const t = truncate(source, opts.maxSourceChars, { key: "source", paramName: "maxSourceChars" })
+  const text = truncateMarkdown(
+    sanitizeTerminal(source),
+    opts.maxSourceChars,
+    "\n... (source truncated, use maxSourceChars to increase)"
+  )
   lines.push("")
-  lines.push("```")
-  lines.push(t.text)
-  lines.push("```")
+  const fence = codeFence(text)
+  lines.push(fence)
+  lines.push(text)
+  lines.push(fence)
   return lines.join("\n")
 }
 
@@ -190,7 +253,35 @@ export const formatCellMarkdownDetailed = async (
     return { rendered, attachments: collector.attachments }
   }
   if (cell.cell_type === "markdown") {
-    return { rendered: formatMarkdownCell(cell, index, opts), attachments: [] }
+    const rendered = formatMarkdownCell(cell, index, opts)
+    if (
+      (opts.output.includeImages === true || opts.saveImages === true) &&
+      cell.attachments !== undefined
+    ) {
+      for (const [name, data] of Object.entries(cell.attachments)) {
+        if (data === null || typeof data !== "object") continue
+        for (const [mime, value] of Object.entries(data as Record<string, unknown>)) {
+          if (isAttachableImageMime(mime) && typeof value === "string") {
+            collector.attachments.push(formatAttachment(mime, value, name))
+          }
+        }
+      }
+    }
+    return { rendered, attachments: collector.attachments }
   }
-  return { rendered: formatRawCell(cell, index, opts), attachments: [] }
+  const rendered = formatRawCell(cell, index, opts)
+  if (
+    (opts.output.includeImages === true || opts.saveImages === true) &&
+    cell.attachments !== undefined
+  ) {
+    for (const [name, data] of Object.entries(cell.attachments)) {
+      if (data === null || typeof data !== "object") continue
+      for (const [mime, value] of Object.entries(data as Record<string, unknown>)) {
+        if (isAttachableImageMime(mime) && typeof value === "string") {
+          collector.attachments.push(formatAttachment(mime, value, name))
+        }
+      }
+    }
+  }
+  return { rendered, attachments: collector.attachments }
 }

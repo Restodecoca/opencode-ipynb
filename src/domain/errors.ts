@@ -1,4 +1,4 @@
-import { Data, Effect } from "effect"
+import { Data } from "effect"
 
 export type NotebookErrorKind =
   | "NotebookNotFound"
@@ -9,11 +9,8 @@ export type NotebookErrorKind =
   | "NotebookExecution"
   | "PythonRunner"
   | "PermissionDenied"
-  | "OutputTooLarge"
   | "PathOutsideWorktree"
   | "NotebookNotImplemented"
-  | "NotebookAttachment"
-  | "LockError"
 
 export class NotebookNotFoundError extends Data.TaggedError("NotebookNotFound")<{
   readonly message: string
@@ -57,12 +54,7 @@ export class PythonRunnerError extends Data.TaggedError("PythonRunner")<{
 export class PermissionDeniedError extends Data.TaggedError("PermissionDenied")<{
   readonly message: string
   readonly action: string
-}> {}
-
-export class OutputTooLargeError extends Data.TaggedError("OutputTooLarge")<{
-  readonly message: string
-  readonly cellIndex: number
-  readonly bytes: number
+  readonly cause?: unknown
 }> {}
 
 export class PathOutsideWorktreeError extends Data.TaggedError("PathOutsideWorktree")<{
@@ -76,17 +68,6 @@ export class NotebookNotImplementedError extends Data.TaggedError("NotebookNotIm
   readonly feature: string
 }> {}
 
-export class NotebookAttachmentError extends Data.TaggedError("NotebookAttachment")<{
-  readonly message: string
-  readonly mime: string
-}> {}
-
-export class LockError extends Data.TaggedError("LockError")<{
-  readonly message: string
-  readonly filePath: string
-  readonly cause: string
-}> {}
-
 export type NotebookError =
   | NotebookNotFoundError
   | NotebookParseError
@@ -96,11 +77,8 @@ export type NotebookError =
   | NotebookExecutionError
   | PythonRunnerError
   | PermissionDeniedError
-  | OutputTooLargeError
   | PathOutsideWorktreeError
   | NotebookNotImplementedError
-  | NotebookAttachmentError
-  | LockError
 
 export const isNotebookError = (u: unknown): u is NotebookError =>
   typeof u === "object" &&
@@ -115,8 +93,12 @@ export const errorToMessage = (e: unknown): string => {
         return `Notebook not found: ${e.filePath} (${e.message})`
       case "NotebookParse":
         return `Failed to parse notebook ${e.filePath}: ${e.message}`
-      case "NotebookValidation":
-        return `Notebook ${e.filePath} is invalid: ${e.message} (${e.issues.length} issue(s))`
+      case "NotebookValidation": {
+        const preview = e.issues.slice(0, 3).join("; ")
+        const more =
+          e.issues.length > 3 ? `; +${e.issues.length - 3} more` : ""
+        return `Notebook ${e.filePath} is invalid: ${e.message} (${e.issues.length} issue(s)${preview.length > 0 ? `: ${preview}${more}` : ""})`
+      }
       case "CellIndexOutOfBounds":
         return `Cell index ${e.cellIndex} is out of bounds (0..${Math.max(0, e.total - 1)}) in ${e.filePath}`
       case "NotebookWrite":
@@ -127,20 +109,12 @@ export const errorToMessage = (e: unknown): string => {
         return `Python runner error: ${e.message} (${e.detail})`
       case "PermissionDenied":
         return `Permission denied for action "${e.action}": ${e.message}`
-      case "OutputTooLarge":
-        return `Output too large at cell ${e.cellIndex}: ${e.bytes} bytes (${e.message})`
       case "PathOutsideWorktree":
         return `Path ${e.filePath} is outside worktree ${e.worktree}: ${e.message}`
       case "NotebookNotImplemented":
         return `Not implemented yet: ${e.feature} (${e.message})`
-      case "NotebookAttachment":
-        return `Failed to save attachment (${e.mime}): ${e.message}`
-      case "LockError":
-        return `Lock error on ${e.filePath}: ${e.message} (cause: ${e.cause})`
     }
   }
   if (e instanceof Error) return e.message
   return String(e)
 }
-
-export const failWith = <E extends NotebookError>(e: E) => Effect.fail(e)

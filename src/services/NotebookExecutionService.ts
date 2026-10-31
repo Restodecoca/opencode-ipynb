@@ -1,21 +1,28 @@
-import { Context, Effect } from "effect"
+import { Effect } from "effect"
+import { promises as fsp } from "node:fs"
 import { spawn } from "node:child_process"
+import { killWindowsTree } from "../utils/windows.js"
+import { createHash } from "node:crypto"
 import {
   CellIndexOutOfBoundsError,
   NotebookExecutionError,
-  NotebookNotFoundError,
   NotebookNotImplementedError,
-  NotebookParseError,
   NotebookValidationError,
-  PathOutsideWorktreeError,
   PythonRunnerError,
   type NotebookError
 } from "../domain/errors.js"
-import { NotebookFileService, type NotebookFileServiceShape } from "./NotebookFileService.js"
-import { PathService, type PathServiceShape } from "./PathService.js"
-import { PermissionService, type PermissionServiceShape } from "./PermissionService.js"
-import { PythonService, type KernelManagerShape, type PythonServiceShape } from "./PythonService.js"
-import { cellSource } from "../domain/notebook.js"
+import type { NotebookFileServiceShape } from "./NotebookFileService.js"
+import type { PathServiceShape } from "./PathService.js"
+import {
+  type PermissionServiceShape
+} from "./PermissionService.js"
+import {
+  helperSpawnEnv,
+  kernelEnvOverrides,
+  pythonInterpreterResources,
+  type PythonServiceShape
+} from "./PythonService.js"
+import type { KernelManagerShape } from "./KernelManager.js"
 import type { CellRaw, CodeCellRaw } from "../domain/cell.js"
 import type {
   RunRequest,
@@ -24,6 +31,10 @@ import type {
   EnvReport
 } from "../domain/execution.js"
 import { EnvReportSchema, RunRequestSchema, RunResponseSchema } from "../domain/execution.js"
+import {
+  MAX_HELPER_STDOUT_BYTES,
+  MAX_RUN_RESPONSE_CHARS
+} from "../utils/limits.js"
 import { formatHint, type TruncationHintKey } from "../utils/i18n.js"
 import type { NotebookRaw } from "../domain/notebook.js"
 
@@ -44,6 +55,7 @@ export interface ExecutionRequest {
 export interface ExecutionResult {
   readonly displayPath: string
   readonly absPath: string
+  readonly kernelPath: string
   readonly executedCells: ReadonlyArray<number>
   readonly durationMs: number
   readonly saved: boolean
@@ -53,7 +65,8 @@ export interface ExecutionResult {
 export interface NotebookExecutionServiceShape {
   readonly execute: (
     filePath: string,
-    request: ExecutionRequest
+    request: ExecutionRequest,
+    options?: { readonly signal?: AbortSignal }
   ) => Effect.Effect<ExecutionResult, NotebookError>
   readonly reportEnv: (
     filePath: string,
@@ -63,52 +76,123 @@ export interface NotebookExecutionServiceShape {
 
 export interface ReportEnvOptions {
   readonly timeoutMs?: number | undefined
+  readonly signal?: AbortSignal | undefined
+  /** The caller already asserted shell for the probe and helper. */
+  readonly skipShellPermission?: boolean | undefined
 }
 
 export interface ExecutionOptions {
   readonly kernelManager?: KernelManagerShape | undefined
   readonly warmKernel: boolean
   readonly defaultTimeoutMs: number
+  /** Configured interpreter, used for the pre-probe shell permission. */
+  readonly pythonPath?: string | undefined
 }
-
-export class NotebookExecutionService extends Context.Tag("@ipynb/NotebookExecutionService")<
-  NotebookExecutionService,
-  NotebookExecutionServiceShape
->() {}
 
 const runPython = (
   pythonPath: string,
   helperPath: string,
   payload: RunRequest,
   workingDirectory: string | undefined,
-  timeoutMs: number
+  timeoutMs: number,
+  externalSignal?: AbortSignal
 ): Effect.Effect<RunResponse, NotebookExecutionError | PythonRunnerError, never> =>
   Effect.gen(function* () {
-    const result = yield* Effect.tryPromise<unknown>((signal) => {
+    const result = yield* Effect.tryPromise({
+      try: (signal) => {
       return new Promise<unknown>((resolve, reject) => {
         const child = spawn(
           pythonPath,
           [helperPath],
           {
             cwd: workingDirectory ?? process.cwd(),
+            env: helperSpawnEnv(),
             stdio: ["pipe", "pipe", "pipe"],
-            signal
+            detached: process.platform !== "win32"
           }
         )
+        // Swallow EPIPE from a helper that exits before reading stdin.
+        child.stdin.on("error", () => {})
         const stdoutChunks: Buffer[] = []
         const stderrChunks: Buffer[] = []
-        const timer = setTimeout(() => {
-          child.kill("SIGKILL")
+        let stdoutBytes = 0
+        let stderrBytes = 0
+        let forceTimer: NodeJS.Timeout | undefined
+        const signalTree = (signal: NodeJS.Signals) => {
+          if (child.pid === undefined) return
+          if (process.platform === "win32") {
+            killWindowsTree(child.pid)
+          } else {
+            try {
+              process.kill(-child.pid, signal)
+            } catch {
+              try {
+                child.kill(signal)
+              } catch {
+                // already gone
+              }
+            }
+          }
+        }
+        const killTree = () => {
+          // Give the Python helper a chance to kill the Jupyter kernel's
+          // process group (it runs in its own session), then force it.
+          signalTree("SIGTERM")
+          forceTimer = setTimeout(() => signalTree("SIGKILL"), 750)
+          forceTimer.unref?.()
+        }
+        let timer: NodeJS.Timeout | undefined
+        let cleanup = (): void => {}
+        const onAbort = () => {
+          cleanup()
+          killTree()
+          reject(new Error("python runner aborted"))
+        }
+        if (externalSignal?.aborted) {
+          onAbort()
+          return
+        }
+        externalSignal?.addEventListener("abort", onAbort, { once: true })
+        signal.addEventListener("abort", onAbort, { once: true })
+        cleanup = () => {
+          if (timer !== undefined) clearTimeout(timer)
+          if (forceTimer !== undefined) clearTimeout(forceTimer)
+          externalSignal?.removeEventListener("abort", onAbort)
+          signal.removeEventListener("abort", onAbort)
+        }
+        timer = setTimeout(() => {
+          cleanup()
+          killTree()
           reject(new Error(`python runner timed out after ${timeoutMs}ms`))
         }, timeoutMs)
-        child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk))
-        child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk))
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdoutBytes += chunk.length
+          if (stdoutBytes > MAX_HELPER_STDOUT_BYTES) {
+            cleanup()
+            killTree()
+            reject(
+              new Error(
+                `python runner produced more than ${MAX_HELPER_STDOUT_BYTES} bytes of stdout`
+              )
+            )
+            return
+          }
+          stdoutChunks.push(chunk)
+        })
+        child.stderr.on("data", (chunk: Buffer) => {
+          // stderr is diagnostic only: keep the tail bounded.
+          if (stderrBytes >= 1024 * 1024) return
+          stderrBytes += chunk.length
+          stderrChunks.push(chunk)
+        })
         child.on("error", (err) => {
           clearTimeout(timer)
+          cleanup()
           reject(err instanceof Error ? err : new Error(String(err)))
         })
         child.on("close", (code) => {
           clearTimeout(timer)
+          cleanup()
           const stdout = Buffer.concat(stdoutChunks).toString("utf8")
           const stderr = Buffer.concat(stderrChunks).toString("utf8")
           if (code !== 0) {
@@ -125,7 +209,8 @@ const runPython = (
         try {
           if (!child.stdin.writable) {
             clearTimeout(timer)
-            child.kill("SIGKILL")
+            cleanup()
+            killTree()
             reject(new Error("python helper stdin is closed before write"))
             return
           }
@@ -133,10 +218,13 @@ const runPython = (
           child.stdin.end()
         } catch (err) {
           clearTimeout(timer)
-          child.kill("SIGKILL")
+          cleanup()
+          killTree()
           reject(new Error(`failed to write request to python helper: ${err instanceof Error ? err.message : String(err)}`))
         }
       })
+      },
+      catch: (err) => err
     }).pipe(
       Effect.mapError(
         (err): NotebookExecutionError | PythonRunnerError =>
@@ -154,8 +242,16 @@ const runPython = (
       })
     }
     if (!parsed.data.success && parsed.data.error) {
+      // Honor maxOutputChars even on the failure path; the helper caps at
+      // 8k but callers may ask for much less.
+      const cap = Math.max(0, payload.maxOutputChars ?? 6_000)
+      const ename = parsed.data.error.ename.slice(0, cap)
+      const evalue = parsed.data.error.evalue.slice(
+        0,
+        Math.max(0, cap - ename.length - 2)
+      )
       return yield* new NotebookExecutionError({
-        message: `${parsed.data.error.ename}: ${parsed.data.error.evalue}`,
+        message: `${ename}: ${evalue}`,
         filePath: payload.filePath,
         cellIndex: parsed.data.error.cellIndex
       })
@@ -177,6 +273,7 @@ const truncateText = (
     { paramName: "maxOutputChars", maxChars },
     locale
   )
+  if (suffix.length >= maxChars) return text.slice(0, maxChars)
   const budget = Math.max(0, maxChars - suffix.length)
   return text.slice(0, budget) + suffix
 }
@@ -188,18 +285,61 @@ const truncateTraceback = (tb: ReadonlyArray<string>, maxChars: number): Readonl
   return [truncated]
 }
 
+export const cellSummaryChars = (summary: CellExecutionSummary): number =>
+  (summary.stdout?.length ?? 0) +
+  (summary.stderr?.length ?? 0) +
+  (summary.resultPreview?.length ?? 0) +
+  (summary.errors?.reduce(
+    (total, err) =>
+      total +
+      err.ename.length +
+      err.evalue.length +
+      err.traceback.reduce((sum, line) => sum + line.length, 0),
+    0
+  ) ?? 0) +
+  (summary.displayData?.reduce(
+    (total, item) => total + item.mime.length + 24,
+    0
+  ) ?? 0)
+
 const truncateCellSummary = (
   summary: CellExecutionSummary,
   maxOutputChars: number
 ): CellExecutionSummary => {
-  const stdout = truncateText(summary.stdout, maxOutputChars, undefined, "output")
-  const stderr = truncateText(summary.stderr, maxOutputChars, undefined, "output")
-  const resultPreview = truncateText(summary.resultPreview, maxOutputChars, undefined, "output")
-  const errors = summary.errors?.map((err: { ename: string; evalue: string; traceback: ReadonlyArray<string> }) => ({
-    ename: err.ename,
-    evalue: err.evalue,
-    traceback: [...truncateTraceback(err.traceback, maxOutputChars)]
-  }))
+  // One budget for the whole cell: stdout + stderr + result + tracebacks.
+  let remaining = Math.max(0, maxOutputChars)
+  const take = (text: string | undefined): string | undefined => {
+    const value = truncateText(text, remaining, undefined, "output")
+    remaining = Math.max(0, remaining - (value?.length ?? 0))
+    return value
+  }
+  const stdout = take(summary.stdout)
+  const stderr = take(summary.stderr)
+  const resultPreview = take(summary.resultPreview)
+  const errors = summary.errors?.map((err: { ename: string; evalue: string; traceback: ReadonlyArray<string> }) => {
+    const ename = take(err.ename) ?? "Error"
+    const evalue = take(err.evalue) ?? ""
+    const traceback = [...truncateTraceback(err.traceback, remaining)]
+    remaining = Math.max(
+      0,
+      remaining - traceback.reduce((sum, line) => sum + line.length, 0)
+    )
+    return { ename, evalue, traceback }
+  })
+  const maxDisplayItems = Math.min(50, Math.floor(remaining / 24))
+  const displayData =
+    summary.displayData === undefined || maxDisplayItems <= 0
+      ? undefined
+      : summary.displayData.slice(0, maxDisplayItems).map((item) => {
+          const mime =
+            take(
+              item.mime.length > 200
+                ? `${item.mime.slice(0, 200)}... (truncated)`
+                : item.mime
+            ) ?? ""
+          remaining = Math.max(0, remaining - 24)
+          return { ...item, mime }
+        })
   return {
     cellIndex: summary.cellIndex,
     status: summary.status,
@@ -208,7 +348,7 @@ const truncateCellSummary = (
     ...(stdout !== undefined ? { stdout } : {}),
     ...(stderr !== undefined ? { stderr } : {}),
     ...(resultPreview !== undefined ? { resultPreview } : {}),
-    ...(summary.displayData !== undefined ? { displayData: summary.displayData } : {}),
+    ...(displayData !== undefined ? { displayData } : {}),
     ...(errors !== undefined ? { errors } : {})
   }
 }
@@ -216,24 +356,48 @@ const truncateCellSummary = (
 const truncateRunResponse = (
   response: RunResponse,
   maxOutputChars: number
-): RunResponse => ({
-  success: response.success,
-  executedCells: response.executedCells,
-  durationMs: response.durationMs,
-  ...(response.saved !== undefined ? { saved: response.saved } : {}),
-  outputs: response.outputs.map((o) => truncateCellSummary(o, maxOutputChars)),
-  ...(response.error !== undefined
-    ? {
-        error: {
-          kind: response.error.kind,
-          cellIndex: response.error.cellIndex,
-          ename: response.error.ename,
-          evalue: response.error.evalue,
-          traceback: [...truncateTraceback(response.error.traceback, maxOutputChars)]
-        }
-      }
-    : {})
-})
+): RunResponse => {
+  // Per-cell budget plus a hard per-response budget so a 500-cell notebook
+  // cannot return megabytes of stdout in one tool result.
+  let remaining = Math.min(
+    MAX_RUN_RESPONSE_CHARS,
+    Math.max(0, maxOutputChars) * Math.max(1, response.outputs.length)
+  )
+  const outputs = response.outputs.slice(0, 1_000).map((o) => {
+    const budget = Math.min(maxOutputChars, remaining)
+    const truncated = truncateCellSummary(o, budget)
+    // Account for the status line and structural JSON overhead.
+    remaining = Math.max(
+      0,
+      remaining - cellSummaryChars(truncated) - 200
+    )
+    return truncated
+  })
+  let errorBudget = Math.min(maxOutputChars, remaining)
+  let error: RunResponse["error"] | undefined
+  if (response.error !== undefined) {
+    const ename = truncateText(response.error.ename, errorBudget) ?? "Error"
+    errorBudget = Math.max(0, errorBudget - ename.length)
+    const evalue = truncateText(response.error.evalue, errorBudget) ?? ""
+    errorBudget = Math.max(0, errorBudget - evalue.length)
+    const traceback = [...truncateTraceback(response.error.traceback, errorBudget)]
+    error = {
+      kind: response.error.kind,
+      cellIndex: response.error.cellIndex,
+      ename,
+      evalue,
+      traceback
+    }
+  }
+  return {
+    success: response.success,
+    executedCells: response.executedCells.slice(0, 10_000),
+    durationMs: response.durationMs,
+    ...(response.saved !== undefined ? { saved: response.saved } : {}),
+    outputs,
+    ...(error !== undefined ? { error } : {})
+  }
+}
 
 export const buildPersistedOutputs = (
   summary: CellExecutionSummary
@@ -304,12 +468,39 @@ const makeExecutionImpl = (
     warmKernel && kernelManager !== undefined && (mode === "all" || mode === "cell")
 
   return {
-    execute: (filePath, request) =>
+    execute: (filePath, request, options) =>
       Effect.gen(function* () {
         const abs = yield* pathSvc.resolve(filePath)
         yield* pathSvc.ensureInsideWorktree(abs)
         yield* pathSvc.ensureExists(abs)
+        const stat = yield* Effect.tryPromise({
+          // stat follows symlinks: a link to a regular notebook is valid, a
+          // link to a FIFO/socket/device still reports non-regular.
+          try: () => fsp.stat(abs),
+          catch: (err) =>
+            new NotebookValidationError({
+              message: "failed to stat notebook",
+              filePath: abs,
+              issues: [err instanceof Error ? err.message : String(err)]
+            })
+        })
+        if (!stat.isFile()) {
+          return yield* new NotebookValidationError({
+            message: "notebook path is not a regular file",
+            filePath: abs,
+            issues: ["refusing to read a FIFO, socket, or device"]
+          })
+        }
+        // Validate schema and the 50 MB limit even when save=false; the
+        // Python helper would otherwise load arbitrary JSON/large files.
+        yield* fileSvc.read(abs)
         const displayPath = pathSvc.toDisplay(abs)
+        const kernelPath = yield* Effect.promise(() =>
+          fsp.realpath(abs).catch(() => abs)
+        )
+        // Pin the canonical target before any probe/helper work; the lexical
+        // path can be swapped to an outside symlink after the first check.
+        yield* pathSvc.ensureInsideWorktree(kernelPath)
 
         // Validate the request before we touch Python: a malformed payload is a
         // user error, not an environment error. This ordering also makes the
@@ -335,23 +526,116 @@ const makeExecutionImpl = (
             )
           })
         }
-        const payload: RunRequest = parsed.data
+        // The helper must never write the notebook itself: the TypeScript
+        // side asks for `edit` permission and persists outputs atomically.
+        // Keep the full raw outputs available only when the caller asked to
+        // save, so small reads do not pay for base64 images.
+        const kernelEnv = kernelEnvOverrides()
+        const payload: RunRequest = {
+          ...parsed.data,
+          filePath: kernelPath,
+          save: false,
+          includeRawOutputs: request.save,
+          ...(kernelEnv === undefined ? {} : { kernelEnv })
+        }
+
+        const useWarm = useWarmKernel(request.mode)
+        if (useWarm && request.workingDirectory !== undefined) {
+          return yield* new NotebookValidationError({
+            message:
+              "workingDirectory is not supported with the warm kernel; use mode=range/from or disable warmKernel",
+            filePath: abs,
+            issues: ["workingDirectory cannot be changed for a warm kernel"]
+          })
+        }
+        let workingDirectory: string | undefined
+        if (request.workingDirectory !== undefined) {
+          workingDirectory = yield* pathSvc.resolve(request.workingDirectory)
+          yield* pathSvc.ensureInsideWorktree(workingDirectory)
+        }
 
         const helperPath = yield* pythonSvc.findHelper()
         if (!helperPath) {
           return yield* new NotebookNotImplementedError({
             message:
-              "python/ipynb_runner.py was not found. The plugin ships the helper, but it could not be located at runtime. Run from the plugin checkout, reinstall via npm, or set ipynb.helperRelativePath.",
+              "python/ipynb_runner.py was not found. The plugin ships the helper, but it could not be located at runtime. Run from the plugin checkout, reinstall via npm, or set the plugin `helperRelativePath` option.",
             feature: "notebook execution"
           })
         }
+
+        // Include both the alias the caller used and the pinned real target:
+        // a deny on either identity must be evaluated.
+        const lexicalAliases = yield* permSvc.aliases(abs)
+        const kernelAliases = yield* permSvc.aliases(kernelPath)
+        const absAliases = [...new Set([...lexicalAliases, ...kernelAliases])]
+        const cwdAliases =
+          workingDirectory === undefined
+            ? []
+            : yield* permSvc.aliases(workingDirectory)
+        const configuredPython = execOpts?.pythonPath
+        const shellPatterns = [
+          ...(configuredPython === undefined ? [] : [configuredPython]),
+          ...pythonInterpreterResources(configuredPython),
+          helperPath,
+          ...absAliases,
+          ...cwdAliases
+        ]
+        if (request.save) {
+          yield* permSvc.ask({
+            kind: "edit",
+            action: "ipynb_run_save",
+            patterns: absAliases,
+            always: absAliases,
+            metadata: {
+              filePath: abs,
+              mode: request.mode,
+              cellIndex: request.cellIndex,
+              start: request.start,
+              end: request.end
+            }
+          })
+        }
+        yield* permSvc.ask({
+          kind: "shell",
+          action: "ipynb_run",
+          patterns: shellPatterns,
+          always: absAliases,
+          metadata: {
+            filePath: abs,
+            pythonPath: configuredPython,
+            mode: request.mode,
+            cellIndex: request.cellIndex,
+            start: request.start,
+            end: request.end,
+            save: request.save,
+            workingDirectory: request.workingDirectory,
+            timeoutMs: request.timeoutMs
+          }
+        })
 
         const probe = yield* pythonSvc.probe()
         if (probe.from === "none") {
           return yield* new NotebookNotImplementedError({
             message:
-              "No Python interpreter found. Set ipynb.pythonPath or OPENCODE_IPYNB_PYTHON, or install `python` on PATH. See ipynb_doctor for details.",
+              "No Python interpreter found. Set the plugin `pythonPath` option or OPENCODE_IPYNB_PYTHON, or install `python` on PATH. See ipynb_doctor for details.",
             feature: "notebook execution"
+          })
+        }
+        if (
+          !pythonInterpreterResources(configuredPython).includes(
+            probe.pythonPath
+          )
+        ) {
+          yield* permSvc.ask({
+            kind: "shell",
+            action: "ipynb_run_python",
+            patterns: [probe.pythonPath, ...absAliases],
+            always: absAliases,
+            metadata: {
+              filePath: abs,
+              pythonPath: probe.pythonPath,
+              mode: request.mode
+            }
           })
         }
         const deps = yield* pythonSvc.checkDependencies(probe.pythonPath)
@@ -363,43 +647,48 @@ const makeExecutionImpl = (
           })
         }
 
-        yield* permSvc.ask({
-          kind: "bash",
-          action: "ipynb_run",
-          patterns: [probe.pythonPath, helperPath, abs],
-          always: [abs],
-          metadata: {
-            filePath: abs,
-            pythonPath: probe.pythonPath,
-            mode: request.mode,
-            cellIndex: request.cellIndex,
-            start: request.start,
-            end: request.end,
-            save: request.save,
-            workingDirectory: request.workingDirectory,
-            timeoutMs: request.timeoutMs
-          }
-        })
+        let beforeHash: string | undefined
+        if (request.save) {
+          const before = yield* fileSvc.readWithText(kernelPath)
+          beforeHash = createHash("sha256").update(before.text).digest("hex")
+        }
 
         const startTs = Date.now()
-        const useWarm = useWarmKernel(request.mode)
         const response = useWarm && kernelManager
-          ? yield* kernelManager.execute(abs, payload, { pythonPath: probe.pythonPath, helperPath })
+          ? yield* kernelManager.execute(
+              kernelPath,
+              payload,
+              { pythonPath: probe.pythonPath, helperPath },
+              options
+            )
           : yield* runPython(
               probe.pythonPath,
               helperPath,
               payload,
-              request.workingDirectory,
-              request.timeoutMs
+              workingDirectory,
+              request.timeoutMs,
+              options?.signal
             )
         const durationMs = Date.now() - startTs
         const truncated = truncateRunResponse(response, request.maxOutputChars)
 
+        let wrote = false
         if (request.save) {
+          if (response.outputs.some((output) => output.rawOutputsOmitted === true)) {
+            return yield* new NotebookValidationError({
+              message:
+                "cell outputs exceed the raw-output save limit; outputs were not saved",
+              filePath: abs,
+              issues: [
+                "reduce the output size or run with save=false to keep raw outputs bounded"
+              ]
+            })
+          }
           yield* fileSvc.withFileLock(
-            abs,
+            kernelPath,
             Effect.gen(function* () {
-              const notebook = yield* fileSvc.read(abs)
+              const snapshot = yield* fileSvc.readWithText(kernelPath)
+              const notebook = snapshot.notebook
               if (notebook.cells.length > 0) {
                 const cellsByIndex = new Map<number, CodeCellRaw>()
                 for (const idx of response.executedCells) {
@@ -426,9 +715,26 @@ const makeExecutionImpl = (
                   cellsByIndex.set(idx, next)
                 }
                 if (cellsByIndex.size > 0) {
+                  if (
+                    beforeHash !== undefined &&
+                    createHash("sha256").update(snapshot.text).digest("hex") !==
+                      beforeHash
+                  ) {
+                      return yield* new NotebookValidationError({
+                        message:
+                          "notebook changed while executing; outputs were not saved",
+                        filePath: abs,
+                        issues: [
+                          "re-run ipynb_run on the current notebook revision"
+                        ]
+                      })
+                  }
                   const newCells = notebook.cells.map((c, i) => cellsByIndex.get(i) ?? c)
                   const newNotebook: NotebookRaw = { ...notebook, cells: newCells }
-                  yield* fileSvc.writeAtomic(abs, newNotebook)
+                  yield* fileSvc.writeAtomic(kernelPath, newNotebook, {
+                    noFollowFinal: true
+                  })
+                  wrote = true
                 }
               }
             })
@@ -438,9 +744,10 @@ const makeExecutionImpl = (
         return {
           displayPath,
           absPath: abs,
-          executedCells: response.executedCells,
+          kernelPath,
+          executedCells: response.executedCells.slice(0, 10_000),
           durationMs,
-          saved: request.save,
+          saved: request.save && wrote,
           response: truncated
         }
       }),
@@ -455,8 +762,29 @@ const makeExecutionImpl = (
         if (!helperPath) {
           return yield* new NotebookNotImplementedError({
             message:
-              "python/ipynb_runner.py was not found. The plugin ships the helper, but it could not be located at runtime. Run from the plugin checkout, reinstall via npm, or set ipynb.helperRelativePath.",
+              "python/ipynb_runner.py was not found. The plugin ships the helper, but it could not be located at runtime. Run from the plugin checkout, reinstall via npm, or set the plugin `helperRelativePath` option.",
             feature: "notebook env report"
+          })
+        }
+
+        const absAliases = yield* permSvc.aliases(abs)
+        const configuredPython = execOpts?.pythonPath
+        const shellPatterns = [
+          ...(configuredPython === undefined ? [] : [configuredPython]),
+          ...pythonInterpreterResources(configuredPython),
+          helperPath,
+          ...absAliases
+        ]
+        if (options?.skipShellPermission !== true) {
+          yield* permSvc.ask({
+            kind: "shell",
+            action: "ipynb_repro_env",
+            patterns: shellPatterns,
+            always: absAliases,
+            metadata: {
+              filePath: abs,
+              pythonPath: configuredPython
+            }
           })
         }
 
@@ -464,11 +792,24 @@ const makeExecutionImpl = (
         if (probe.from === "none") {
           return yield* new NotebookNotImplementedError({
             message:
-              "No Python interpreter found. Set ipynb.pythonPath or OPENCODE_IPYNB_PYTHON, or install `python` on PATH. See ipynb_doctor for details.",
+              "No Python interpreter found. Set the plugin `pythonPath` option or OPENCODE_IPYNB_PYTHON, or install `python` on PATH. See ipynb_doctor for details.",
             feature: "notebook env report"
           })
         }
 
+        if (
+          !pythonInterpreterResources(configuredPython).includes(
+            probe.pythonPath
+          )
+        ) {
+          yield* permSvc.ask({
+            kind: "shell",
+            action: "ipynb_repro_python",
+            patterns: [probe.pythonPath, ...absAliases],
+            always: absAliases,
+            metadata: { filePath: abs, pythonPath: probe.pythonPath }
+          })
+        }
         // The 30s floor is a minimum for env-mode (pip freeze + import probes);
         // the configured defaultTimeoutMs is the upper bound when the caller
         // does not pass an explicit value.
@@ -487,13 +828,21 @@ const makeExecutionImpl = (
             )
           })
         }
-        const payload: RunRequest = envParsed.data
+        const envRealPath = yield* Effect.promise(() =>
+          fsp.realpath(abs).catch(() => abs)
+        )
+        yield* pathSvc.ensureInsideWorktree(envRealPath)
+        const payload: RunRequest = {
+          ...envParsed.data,
+          filePath: envRealPath
+        }
         const response = yield* runPython(
           probe.pythonPath,
           helperPath,
           payload,
           undefined,
-          envTimeout
+          envTimeout,
+          options?.signal
         )
         if (!response.env) {
           return yield* new PythonRunnerError({
@@ -516,5 +865,4 @@ const makeExecutionImpl = (
 }
 
 export { makeExecutionImpl }
-export { cellSource }
 export { truncateText, truncateTraceback, truncateCellSummary, truncateRunResponse }

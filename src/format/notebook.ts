@@ -1,6 +1,10 @@
+import { codeFence } from "../utils/fence.js"
+
 export interface MarkdownCellInput {
   readonly cell_type: "code" | "markdown" | "raw"
   readonly source: string
+  /** Rendered image links appended after a raw-cell fence. */
+  readonly attachments?: ReadonlyArray<string> | undefined
 }
 
 export interface FormatMarkdownOptions {
@@ -18,13 +22,21 @@ const renderCell = (
   if (cell.cell_type === "markdown") {
     out.push(cell.source.trim())
   } else if (cell.cell_type === "code") {
-    out.push("```python")
-    out.push(cell.source.replace(/\n$/, ""))
-    out.push("```")
+    const source = cell.source.replace(/\n$/, "")
+    const fence = codeFence(source)
+    out.push(`${fence}python`)
+    out.push(source)
+    out.push(fence)
   } else {
-    out.push("```")
-    out.push(cell.source.replace(/\n$/, ""))
-    out.push("```")
+    const source = cell.source.replace(/\n$/, "")
+    const fence = codeFence(source)
+    out.push(fence)
+    out.push(source)
+    out.push(fence)
+    if (cell.attachments !== undefined && cell.attachments.length > 0) {
+      out.push("")
+      out.push(...cell.attachments)
+    }
   }
   if (
     options.wrapOutputsInDetails &&

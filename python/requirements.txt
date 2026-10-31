@@ -7,23 +7,24 @@
 # fast, reproducible, and respects the user's existing Python install.
 #
 # Preferred (uv):
-#   uv pip install nbformat nbclient jupyter_client ipykernel
+#   uv pip install pip nbformat nbclient jupyter_client ipykernel
 #   python -m ipykernel install --user
 #
 # Alternative (pip into a venv):
 #   python -m venv .venv
 #   source .venv/bin/activate     # Windows: .venv\Scripts\activate
-#   pip install nbformat nbclient jupyter_client ipykernel
+#   pip install pip nbformat nbclient jupyter_client ipykernel
 #   python -m ipykernel install --user
 #
 # Alternative (conda):
-#   conda install -c conda-forge nbformat nbclient jupyter_client ipykernel
+#   conda install -c conda-forge pip nbformat nbclient jupyter_client ipykernel
 #
 # If you have multiple Python interpreters, point the plugin at the right
 # one via either:
-#   - opencode.json: { "ipynb": { "pythonPath": "C:/path/to/python.exe" } }
+#   - opencode.json: { "plugins": [{ "package": "opencode-ipynb", "options": { "pythonPath": "/path/to/python" } }] }
 #   - env var:       OPENCODE_IPYNB_PYTHON=C:/path/to/python.exe
 
+pip>=23
 nbformat>=5.9
 nbclient>=0.9
 jupyter_client>=8.0

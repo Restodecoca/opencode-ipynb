@@ -23,3 +23,21 @@ venv/
 AGENTS.md
 TODO.md
 test-output.log
+
+# Materialized virtual notebooks used only for LSP navigation.
+**/.opencode/ipynb-lsp/
+
+# Notebook-adjacent LSP sidecars and diagnostics temp files.
+**/opencode-ipynb-lsp-*.py
+**/opencode-ipynb-lsp-*.tmp
+**/opencode-ipynb-diag-*.py
+
+# Local, machine-specific config (copy opencode.example.jsonc).
+opencode.jsonc
+
+# Local demo notebook used for manual validation (not a product fixture).
+opencode.ipynb
+
+# CI coverage output.
+coverage.txt
+coverage/

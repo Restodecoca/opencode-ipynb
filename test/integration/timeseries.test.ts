@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
 import * as path from "node:path"
 import { Effect } from "effect"
 import { makePathService } from "../../src/services/PathService.js"

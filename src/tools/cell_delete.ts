@@ -1,9 +1,11 @@
+import { sanitizeInline } from "../utils/markdown-safe.js"
+import { codeFence } from "../utils/fence.js"
 import { z } from "zod"
-import { tool } from "@opencode-ai/plugin"
-import { Effect } from "effect"
-import type { ToolContext } from "@opencode-ai/plugin"
+import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
+import type { ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
 import { errorToMessage } from "../domain/errors.js"
+import { assertReadPermission } from "./_readPermission.js"
 
 const args = {
   filePath: z.string().describe("Absolute or relative path to the .ipynb file"),
@@ -21,19 +23,22 @@ export const ipynbCellDeleteTool = tool({
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context)
     try {
-      const result = await Effect.runPromise(
+      // The result includes a preview of the deleted source.
+      await assertReadPermission(context, input.filePath)
+      const result = await runToolEffect(
         services.edit.deleteCell(input.filePath, input.cellIndex)
       )
       const lines: string[] = []
       lines.push(
-        `Deleted ${result.deletedType} cell at index [${result.deletedIndex}] from \`${result.displayPath}\`.`
+        `Deleted ${result.deletedType} cell at index [${result.deletedIndex}] from \`${sanitizeInline(result.displayPath)}\`.`
       )
       lines.push(`Total cells: ${result.totalCells}`)
       lines.push("")
       lines.push("**Deleted source (preview):**")
-      lines.push("```")
+      const fence = codeFence(result.deletedPreview)
+      lines.push(fence)
       lines.push(result.deletedPreview)
-      lines.push("```")
+      lines.push(fence)
       return {
         title: `Delete cell ${input.cellIndex} of ${input.filePath}`,
         output: lines.join("\n"),
@@ -45,6 +50,7 @@ export const ipynbCellDeleteTool = tool({
         }
       }
     } catch (err) {
+      rethrowPermissionDenied(err)
       const message = errorToMessage(err)
       return {
         title: `Delete cell ${input.cellIndex} of ${input.filePath} (error)`,

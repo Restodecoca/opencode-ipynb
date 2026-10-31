@@ -1,7 +1,8 @@
+import { sanitizeInline } from "../utils/markdown-safe.js"
+import { codeFence } from "../utils/fence.js"
 import { z } from "zod"
-import { tool } from "@opencode-ai/plugin"
-import { Effect } from "effect"
-import type { ToolContext } from "@opencode-ai/plugin"
+import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
+import type { ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
 import { errorToMessage } from "../domain/errors.js"
 
@@ -28,7 +29,7 @@ export const ipynbCellInsertTool = tool({
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context)
     try {
-      const result = await Effect.runPromise(
+      const result = await runToolEffect(
         services.edit.insertCell(
           input.filePath,
           input.cellType,
@@ -38,14 +39,16 @@ export const ipynbCellInsertTool = tool({
       )
       const lines: string[] = []
       lines.push(
-        `Inserted new ${result.cellType} cell at index [${result.cellIndex}] of \`${result.displayPath}\`.`
+        `Inserted new ${result.cellType} cell at index [${result.cellIndex}] of \`${sanitizeInline(result.displayPath)}\`.`
       )
       lines.push(`Total cells: ${result.totalCells}`)
       lines.push("")
       lines.push("**Preview (first line):**")
-      lines.push("```")
-      lines.push(result.preview.length > 0 ? result.preview : "(empty)")
-      lines.push("```")
+      const preview = result.preview.length > 0 ? result.preview : "(empty)"
+      const fence = codeFence(preview)
+      lines.push(fence)
+      lines.push(preview)
+      lines.push(fence)
       return {
         title: `Insert cell into ${input.filePath}`,
         output: lines.join("\n"),
@@ -57,6 +60,7 @@ export const ipynbCellInsertTool = tool({
         }
       }
     } catch (err) {
+      rethrowPermissionDenied(err)
       const message = errorToMessage(err)
       return {
         title: `Insert cell into ${input.filePath} (error)`,

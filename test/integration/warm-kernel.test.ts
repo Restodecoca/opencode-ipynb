@@ -1,10 +1,13 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { Effect } from "effect"
 import { makePathService } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
 import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
-import { makePythonService, makeKernelManager } from "../../src/services/PythonService.js"
+import { makePythonService } from "../../src/services/PythonService.js"
+import { makeKernelManager } from "../../src/services/KernelManager.js"
 import { makeExecutionImpl } from "../../src/services/NotebookExecutionService.js"
 import { describeIf, pythonHas, realHelperEnabled } from "../helpers.js"
 
@@ -172,3 +175,183 @@ describeIf(
     )
   }
 )
+
+describeIf(realHelperEnabled(), "integration > warm kernel > source reload", () => {
+  it(
+    "executes edited cell sources while keeping the same kernel",
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warm-reload-"))
+      const file = path.join(dir, "edit.ipynb")
+      const notebook = (source: string) => ({
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {
+          kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
+          language_info: { name: "python", file_extension: ".py" }
+        },
+        cells: [
+          {
+            cell_type: "code",
+            execution_count: null,
+            metadata: {},
+            outputs: [],
+            source
+          }
+        ]
+      })
+      fs.writeFileSync(file, JSON.stringify(notebook('print("v1")')))
+      const { exec, kernel } = buildExecution(dir)
+      try {
+        const run = () =>
+          Effect.runPromise(
+            exec.execute("edit.ipynb", {
+              mode: "cell",
+              cellIndex: 0,
+              start: undefined,
+              end: undefined,
+              kernel: undefined,
+              timeoutMs: 60_000,
+              save: false,
+              workingDirectory: undefined,
+              maxOutputChars: 4_000
+            })
+          )
+        const first = await run()
+        expect(first.response.outputs[0]?.stdout).toContain("v1")
+        const pid = kernel.list()[0]?.pid
+        fs.writeFileSync(file, JSON.stringify(notebook('print("v2")')))
+        const second = await run()
+        expect(second.response.outputs[0]?.stdout).toContain("v2")
+        expect(kernel.list()[0]?.pid).toBe(pid)
+      } finally {
+        await Effect.runPromise(kernel.disposeAll())
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    },
+    120_000
+    )
+    it(
+      "uses each request's timeout instead of freezing the first one",
+      async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warm-timeout-"))
+        const file = path.join(dir, "timeout.ipynb")
+        const notebook = (source: string) => ({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {
+            kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
+            language_info: { name: "python", file_extension: ".py" }
+          },
+          cells: [
+            {
+              cell_type: "code",
+              execution_count: null,
+              metadata: {},
+              outputs: [],
+              source
+            }
+          ]
+        })
+        fs.writeFileSync(file, JSON.stringify(notebook('print("quick")')))
+        const { exec, kernel } = buildExecution(dir)
+        try {
+          const run = (timeoutMs: number) =>
+            Effect.runPromise(
+              exec.execute("timeout.ipynb", {
+                mode: "cell",
+                cellIndex: 0,
+                start: undefined,
+                end: undefined,
+                kernel: undefined,
+                timeoutMs,
+                save: false,
+                workingDirectory: undefined,
+                maxOutputChars: 4_000
+              })
+            )
+          await run(1_000)
+          const pid = kernel.list()[0]?.pid
+          fs.writeFileSync(
+            file,
+            JSON.stringify(notebook('import time\ntime.sleep(2)\nprint("slow")'))
+          )
+          const second = await run(10_000)
+          expect(second.response.success).toBe(true)
+          expect(second.response.outputs[0]?.stdout).toContain("slow")
+          expect(kernel.list()[0]?.pid).toBe(pid)
+        } finally {
+          await Effect.runPromise(kernel.disposeAll())
+          fs.rmSync(dir, { recursive: true, force: true })
+        }
+      },
+      120_000
+    )
+    it(
+      "stops the kernel after a real cell timeout so the next run is clean",
+      async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warm-kill-"))
+        const file = path.join(dir, "timeout.ipynb")
+        const notebook = (source: string) => ({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {
+            kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
+            language_info: { name: "python", file_extension: ".py" }
+          },
+          cells: [
+            {
+              cell_type: "code",
+              execution_count: null,
+              metadata: {},
+              outputs: [],
+              source
+            }
+          ]
+        })
+        fs.writeFileSync(file, JSON.stringify(notebook('print("quick")')))
+        const { exec, kernel } = buildExecution(dir)
+        const run = (timeoutMs: number) =>
+          Effect.runPromise(
+            exec.execute("timeout.ipynb", {
+              mode: "cell",
+              cellIndex: 0,
+              start: undefined,
+              end: undefined,
+              kernel: undefined,
+              timeoutMs,
+              save: false,
+              workingDirectory: undefined,
+              maxOutputChars: 4_000
+            })
+          )
+        try {
+          const first = await run(10_000)
+          expect(first.response.success).toBe(true)
+          const pid = kernel.list()[0]?.pid
+          fs.writeFileSync(
+            file,
+            JSON.stringify(notebook('import time\ntime.sleep(3)\nprint("slow")'))
+          )
+          let timedOut: unknown
+          try {
+            await run(1_000)
+          } catch (error) {
+            timedOut = error
+          }
+          expect(timedOut).toBeDefined()
+          await new Promise((resolve) => setTimeout(resolve, 2_000))
+          expect(kernel.list()).toHaveLength(0)
+          fs.writeFileSync(file, JSON.stringify(notebook('print("again")')))
+          const again = await run(10_000)
+          expect(again.response.success).toBe(true)
+          expect(again.response.outputs[0]?.stdout).toContain("again")
+          expect(kernel.list()[0]?.pid).not.toBe(pid)
+        } finally {
+          await Effect.runPromise(kernel.disposeAll())
+          fs.rmSync(dir, { recursive: true, force: true })
+        }
+      },
+      120_000
+    )
+
+})

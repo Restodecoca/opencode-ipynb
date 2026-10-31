@@ -1,66 +1,33 @@
-import { Context, Effect } from "effect"
+import { Effect, Semaphore } from "effect"
+import { randomUUID } from "node:crypto"
 import * as fsp from "node:fs/promises"
+import { constants as fsConstants } from "node:fs"
 import * as path from "node:path"
 import {
-  isNotebookError,
-  LockError,
   NotebookNotFoundError,
   NotebookParseError,
   NotebookValidationError,
-  NotebookWriteError
+  NotebookWriteError,
+  PathOutsideWorktreeError
 } from "../domain/errors.js"
-import { NotebookSchema, type NotebookRaw, cellSource } from "../domain/notebook.js"
+import { NotebookSchema, type NotebookRaw } from "../domain/notebook.js"
 import { safeParseJson, stringifyNotebook } from "../utils/json.js"
-import { unwrapFiberFailure } from "../utils/fiber.js"
+import { MAX_NOTEBOOK_BYTES } from "../utils/limits.js"
+import { replaceFile } from "../utils/atomic-replace.js"
 
-interface FileSemaphore {
-  withPermits: <A, E, R>(
-    filePath: string,
-    program: Effect.Effect<A, E, R>
-  ) => Effect.Effect<A, E | LockError, R>
+interface NotebookFileServiceOptions {
+  /** When set, real paths are pinned and checked against this worktree. */
+  readonly worktree?: string
 }
 
-const describeUnknown = (err: unknown): string =>
-  err instanceof Error ? err.message : String(err)
-
-const makeSemaphore = (): FileSemaphore => {
-  let chain: Promise<unknown> = Promise.resolve()
-  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
-    const next = chain.then(task, task)
-    chain = next.then(
-      () => undefined,
-      () => undefined
-    )
-    return next
-  }
-  return {
-    withPermits: <A, E, R>(
-      filePath: string,
-      program: Effect.Effect<A, E, R>
-    ): Effect.Effect<A, E | LockError, R> =>
-      Effect.tryPromise({
-        try: () =>
-          enqueue(() =>
-            Effect.runPromise(program as Effect.Effect<A, E, never>).then(
-              (a) => a as A,
-              (e) => {
-                throw unwrapFiberFailure<E>(e)
-              }
-            )
-          ),
-        catch: (err): E | LockError => {
-          if (isNotebookError(err)) {
-            return err as E
-          }
-          const detail = describeUnknown(err)
-          return new LockError({
-            message: `Lock error: ${detail}`,
-            filePath,
-            cause: detail
-          })
-        }
-      }) as Effect.Effect<A, E | LockError, R>
-  }
+const inside = (root: string, target: string): boolean => {
+  const relative = path.relative(root, target)
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
+  )
 }
 
 export interface NotebookFileServiceShape {
@@ -68,45 +35,153 @@ export interface NotebookFileServiceShape {
     filePath: string
   ) => Effect.Effect<
     NotebookRaw,
-    NotebookNotFoundError | NotebookParseError | NotebookValidationError
+    | NotebookNotFoundError
+    | NotebookParseError
+    | NotebookValidationError
+    | PathOutsideWorktreeError
   >
-  readonly readText: (filePath: string) => Effect.Effect<string, NotebookNotFoundError>
+  readonly readText: (
+    filePath: string
+  ) => Effect.Effect<
+    string,
+    NotebookNotFoundError | NotebookValidationError | PathOutsideWorktreeError
+  >
+  readonly readWithText: (
+    filePath: string
+  ) => Effect.Effect<
+    { readonly notebook: NotebookRaw; readonly text: string },
+    | NotebookNotFoundError
+    | NotebookParseError
+    | NotebookValidationError
+    | PathOutsideWorktreeError
+  >
   readonly writeAtomic: (
     filePath: string,
-    notebook: NotebookRaw
+    notebook: NotebookRaw,
+    options?: { readonly noFollowFinal?: boolean }
   ) => Effect.Effect<
     void,
-    NotebookParseError | NotebookValidationError | NotebookWriteError
+    | NotebookParseError
+    | NotebookValidationError
+    | NotebookWriteError
+    | PathOutsideWorktreeError
   >
   readonly withFileLock: <A, E, R>(
     filePath: string,
     program: Effect.Effect<A, E, R>
-  ) => Effect.Effect<A, E | LockError, R>
+  ) => Effect.Effect<A, E, R>
 }
 
-export class NotebookFileService extends Context.Tag("@ipynb/NotebookFileService")<
-  NotebookFileService,
-  NotebookFileServiceShape
->() {}
+// The lock registry is module-scoped on purpose: buildServices() creates a
+// fresh NotebookFileService for every tool call, so instance-local locks would
+// not serialize concurrent edits of the same notebook.
+interface FileLock {
+  readonly sem: Semaphore.Semaphore
+  active: number
+}
 
-const buildFileService = (): NotebookFileServiceShape => {
-  const locks = new Map<string, FileSemaphore>()
+const locks = new Map<string, FileLock>()
 
-  const getOrCreateLock = (key: string): FileSemaphore => {
-    const existing = locks.get(key)
-    if (existing) {
-      return existing
+const buildFileService = (
+  options: NotebookFileServiceOptions = {}
+): NotebookFileServiceShape => {
+  const worktree = options.worktree
+  const resolveInside = async (filePath: string): Promise<string> => {
+    if (worktree === undefined) return filePath
+    const root = await fsp.realpath(worktree).catch(() => worktree)
+    const real = await fsp.realpath(filePath)
+    if (!inside(root, real)) {
+      throw new PathOutsideWorktreeError({
+        message: "path resolves outside of the worktree (symlink)",
+        filePath,
+        worktree: root
+      })
     }
-    const sem = makeSemaphore()
-    locks.set(key, sem)
-    return sem
+    return real
   }
 
-  const readText = (filePath: string): Effect.Effect<string, NotebookNotFoundError> =>
+  const getOrCreateLock = (key: string): FileLock => {
+    const existing = locks.get(key)
+    if (existing) return existing
+    const lock: FileLock = { sem: Semaphore.makeUnsafe(1), active: 0 }
+    locks.set(key, lock)
+    return lock
+  }
+
+  const readText = (
+    filePath: string
+  ): Effect.Effect<
+    string,
+    NotebookNotFoundError | NotebookValidationError | PathOutsideWorktreeError
+  > =>
     Effect.tryPromise({
       try: async () => {
         try {
-          return await fsp.readFile(filePath, "utf8")
+          const resolved = await resolveInside(filePath)
+          const stat = await fsp.stat(resolved)
+          if (!stat.isFile()) {
+            throw new NotebookValidationError({
+              message: "notebook path is not a regular file",
+              filePath,
+              issues: ["not a regular file"]
+            })
+          }
+          if (stat.size > MAX_NOTEBOOK_BYTES) {
+            throw new NotebookValidationError({
+              message: `notebook exceeds the ${MAX_NOTEBOOK_BYTES} byte read limit`,
+              filePath,
+              issues: [`size=${stat.size}`]
+            })
+          }
+          // Open without following the final path component and with
+          // O_NONBLOCK: if the path is swapped to a FIFO between stat and
+          // open, the open does not hang and fstat rejects it.
+          const noFollow =
+            process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW
+          const nonBlock =
+            process.platform === "win32" ? 0 : fsConstants.O_NONBLOCK
+          const root =
+            worktree === undefined
+              ? undefined
+              : await fsp.realpath(worktree).catch(() => worktree)
+          // When confinement is enabled, resolved is already the real path.
+          // Opening it directly with O_NOFOLLOW rejects a link swapped in
+          // after resolveInside. Without confinement, resolve the alias first.
+          const target =
+            worktree === undefined
+              ? await fsp.realpath(resolved).catch(() => resolved)
+              : resolved
+          if (root !== undefined && !inside(root, target)) {
+            throw new PathOutsideWorktreeError({
+              message: "path resolves outside of the worktree (symlink swap)",
+              filePath,
+              worktree: root
+            })
+          }
+          const handle = await fsp.open(
+            target,
+            fsConstants.O_RDONLY | noFollow | nonBlock
+          )
+          try {
+            const opened = await handle.stat()
+            if (!opened.isFile()) {
+              throw new NotebookValidationError({
+                message: "notebook path is not a regular file",
+                filePath,
+                issues: ["not a regular file"]
+              })
+            }
+            if (opened.size > MAX_NOTEBOOK_BYTES) {
+              throw new NotebookValidationError({
+                message: `notebook exceeds the ${MAX_NOTEBOOK_BYTES} byte read limit`,
+                filePath,
+                issues: [`size=${opened.size}`]
+              })
+            }
+            return await handle.readFile({ encoding: "utf8" })
+          } finally {
+            await handle.close().catch(() => {})
+          }
         } catch (err) {
           const code = (err as NodeJS.ErrnoException).code
           if (code === "ENOENT") {
@@ -119,12 +194,22 @@ const buildFileService = (): NotebookFileServiceShape => {
         }
       },
       catch: (err) =>
-        err instanceof NotebookNotFoundError
+        err instanceof PathOutsideWorktreeError
           ? err
-          : new NotebookNotFoundError({
-              message: err instanceof Error ? err.message : String(err),
-              filePath
-            })
+          : err instanceof NotebookNotFoundError
+            ? err
+            : err instanceof NotebookValidationError
+              ? err
+              : new NotebookValidationError({
+                message: `cannot read notebook: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+                filePath,
+                issues: [
+                  (err as NodeJS.ErrnoException).code ??
+                    "read failed"
+                ]
+              })
     })
 
   const parseAndValidate = (
@@ -168,24 +253,107 @@ const buildFileService = (): NotebookFileServiceShape => {
 
   const writeAtomic = (
     filePath: string,
-    notebook: NotebookRaw
+    notebook: NotebookRaw,
+    options?: { readonly noFollowFinal?: boolean }
   ): Effect.Effect<
     void,
-    NotebookParseError | NotebookValidationError | NotebookWriteError
+    | NotebookParseError
+    | NotebookValidationError
+    | NotebookWriteError
+    | PathOutsideWorktreeError
   > =>
     Effect.gen(function* () {
-      yield* parseAndValidate(stringifyNotebook(notebook), filePath)
+      const serialized = stringifyNotebook(notebook)
+      if (Buffer.byteLength(serialized, "utf8") > MAX_NOTEBOOK_BYTES) {
+        return yield* new NotebookValidationError({
+          message: `refusing to write a notebook larger than ${MAX_NOTEBOOK_BYTES} bytes`,
+          filePath,
+          issues: ["split the notebook or reduce large outputs"]
+        })
+      }
+      yield* parseAndValidate(serialized, filePath)
       yield* Effect.tryPromise({
         try: async () => {
           const dir = path.dirname(filePath)
+          const root =
+            worktree === undefined
+              ? undefined
+              : await fsp.realpath(worktree).catch(() => worktree)
+          if (root !== undefined) {
+            // Resolve the deepest existing ancestor before mkdir. This accepts
+            // a lexical session path whose real target is inside the worktree
+            // while still rejecting an ancestor symlink that escapes it.
+            let probe = dir
+            let ancestorReal: string | undefined
+            for (let depth = 0; depth < 128; depth += 1) {
+              ancestorReal = await fsp.realpath(probe).catch(() => undefined)
+              if (ancestorReal !== undefined) break
+              const next = path.dirname(probe)
+              if (next === probe) break
+              probe = next
+            }
+            if (ancestorReal === undefined || !inside(root, ancestorReal)) {
+              throw new PathOutsideWorktreeError({
+                message: "path resolves outside of the worktree (symlink)",
+                filePath,
+                worktree: root
+              })
+            }
+          }
           await fsp.mkdir(dir, { recursive: true })
+          const dirReal =
+            worktree === undefined
+              ? await fsp.realpath(dir).catch(() => dir)
+              : await (async () => {
+                  const real = await fsp.realpath(dir)
+                  if (!inside(root!, real)) {
+                    throw new PathOutsideWorktreeError({
+                      message: "path resolves outside of the worktree (symlink)",
+                      filePath,
+                      worktree: root!
+                    })
+                  }
+                  return real
+                })()
+          // Resolve an existing target even without a worktree root so a
+          // symlinked notebook is edited in place instead of replaced.
+          const fileReal =
+            options?.noFollowFinal === true
+              ? undefined
+              : await fsp.realpath(filePath).catch(() => undefined)
+          if (root !== undefined && fileReal !== undefined && !inside(root, fileReal)) {
+            throw new PathOutsideWorktreeError({
+              message: "path resolves outside of the worktree (symlink)",
+              filePath,
+              worktree: root
+            })
+          }
+          // Writing a symlink alias must update the target, not replace the
+          // link with a second notebook.
+          const target = fileReal ?? path.join(dirReal, path.basename(filePath))
+          const targetDir = path.dirname(target)
+          const targetStat = await fsp.stat(target).catch(() => undefined)
+          if (targetStat?.isDirectory()) {
+            throw new NotebookWriteError({
+              message: `cannot overwrite a directory: ${target}`,
+              filePath
+            })
+          }
+          const existingMode = targetStat?.mode !== undefined
+            ? targetStat.mode & 0o777
+            : undefined
           const tmp = path.join(
-            dir,
-            `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+            targetDir,
+            `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
           )
-          await fsp.writeFile(tmp, stringifyNotebook(notebook), "utf8")
           try {
-            await fsp.rename(tmp, filePath)
+            await fsp.writeFile(tmp, serialized, {
+              encoding: "utf8",
+              flag: "wx",
+              mode: existingMode ?? 0o600
+            })
+            if (existingMode !== undefined) await fsp.chmod(tmp, existingMode)
+            await replaceFile(tmp, target)
           } catch (err) {
             await fsp.unlink(tmp).catch((e: NodeJS.ErrnoException) => {
               if (e.code !== "ENOENT") throw e
@@ -194,10 +362,12 @@ const buildFileService = (): NotebookFileServiceShape => {
           }
         },
         catch: (err) =>
-          new NotebookWriteError({
-            message: err instanceof Error ? err.message : String(err),
-            filePath
-          })
+          err instanceof PathOutsideWorktreeError
+            ? err
+            : new NotebookWriteError({
+                message: err instanceof Error ? err.message : String(err),
+                filePath
+              })
       })
     })
 
@@ -208,16 +378,44 @@ const buildFileService = (): NotebookFileServiceShape => {
         return yield* parseAndValidate(text, filePath)
       }),
     readText,
+    readWithText: (filePath) =>
+      Effect.gen(function* () {
+        const text = yield* readText(filePath)
+        const notebook = yield* parseAndValidate(text, filePath)
+        return { notebook, text }
+      }),
     writeAtomic,
-    withFileLock: (filePath, program) => {
-      const key = path.resolve(filePath)
-      const sem = getOrCreateLock(key)
-      return sem.withPermits(filePath, program)
-    }
+    withFileLock: (filePath, program) =>
+      Effect.gen(function* () {
+        const key = yield* Effect.tryPromise({
+          try: async () => {
+            const real = await fsp.realpath(filePath).catch(() => undefined)
+            if (real !== undefined) return real
+            const parent = await fsp
+              .realpath(path.dirname(filePath))
+              .catch(() => path.dirname(filePath))
+            return path.join(parent, path.basename(filePath))
+          },
+          catch: () => path.resolve(filePath)
+        }).pipe(Effect.orElseSucceed(() => path.resolve(filePath)))
+        const lock = getOrCreateLock(key)
+        lock.active += 1
+        return yield* lock.sem.withPermit(program).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              lock.active -= 1
+              // Do not keep a semaphore forever for a one-off path. A new
+              // caller either reuses it before this check or creates a new one.
+              if (lock.active === 0 && locks.get(key) === lock) {
+                locks.delete(key)
+              }
+            })
+          )
+        )
+      })
   }
 }
 
 export const makeNotebookFileService = buildFileService
 
-export { cellSource }
 export const _schemas: { readonly NotebookSchema: typeof NotebookSchema } = { NotebookSchema }

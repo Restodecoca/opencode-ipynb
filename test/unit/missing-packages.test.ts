@@ -56,12 +56,12 @@ describe("extractImportNames", () => {
     expect(extractImportNames("import numpy as np")).toEqual(["numpy"])
   })
 
-  it("extracts a 'from X import Y' line", () => {
-    expect(extractImportNames("from pandas import DataFrame")).toEqual(["DataFrame"])
+  it("extracts the source module from a 'from X import Y' line", () => {
+    expect(extractImportNames("from pandas import DataFrame")).toEqual(["pandas"])
   })
 
-  it("preserves a dotted name after 'from X import Y.Z'", () => {
-    expect(extractImportNames("from sklearn.linear_model import LinearRegression")).toEqual(["LinearRegression"])
+  it("extracts the root source module from a dotted from-import", () => {
+    expect(extractImportNames("from sklearn.linear_model import LinearRegression")).toEqual(["sklearn"])
   })
 
   it("skips comment lines", () => {
@@ -74,7 +74,7 @@ describe("extractImportNames", () => {
 
   it("handles multiple imports in one cell", () => {
     const src = "import numpy\nimport pandas as pd\nfrom sklearn import svm"
-    expect(extractImportNames(src).sort()).toEqual(["numpy", "pandas", "svm"])
+    expect(extractImportNames(src).sort()).toEqual(["numpy", "pandas", "sklearn"])
   })
 })
 
@@ -196,4 +196,132 @@ describe("analyzeMissingPackages", () => {
     expect(warnings).toEqual([])
     expect(elapsed).toBeLessThan(550)
   })
+  it("checks each root package once even when dotted submodules repeat", async () => {
+    const notebook = NotebookSchema.parse({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          cell_type: "code",
+          metadata: {},
+          execution_count: null,
+          outputs: [],
+          source: "import numpy\nimport numpy.linalg\nfrom numpy import ndarray"
+        }
+      ]
+    })
+    const checked: string[] = []
+    const warnings = await Effect.runPromise(
+      analyzeMissingPackages(notebook, {
+        pythonPath: "/usr/bin/python3",
+        checkImport: (_python, name) =>
+          Effect.sync(() => {
+            checked.push(name)
+            return { name, available: true, detail: "ok" }
+          })
+      })
+    )
+    expect(warnings).toEqual([])
+    expect(checked).toEqual(["numpy"])
+  })
+
+  it("bounds the number of import checks and warns about skipped roots", async () => {
+    const cells = Array.from({ length: 600 }, (_, i) => ({
+      cell_type: "code" as const,
+      metadata: {},
+      execution_count: null,
+      outputs: [],
+      source: `import missing_pkg_${i}`
+    }))
+    const notebook = NotebookSchema.parse({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells
+    })
+    let checked = 0
+    const warnings = await Effect.runPromise(
+      analyzeMissingPackages(notebook, {
+        pythonPath: "/usr/bin/python3",
+        checkImport: (_python, name) =>
+          Effect.sync(() => {
+            checked += 1
+            return { name, available: true, detail: "ok" }
+          })
+      })
+    )
+    expect(checked).toBeLessThanOrEqual(500)
+    expect(warnings.join("\n")).toContain("were not checked")
+  })
+
+  it("returns immediately when the caller aborts before checking", async () => {
+    const notebook = NotebookSchema.parse({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          cell_type: "code",
+          metadata: {},
+          execution_count: null,
+          outputs: [],
+          source: "import numpy"
+        }
+      ]
+    })
+    const controller = new AbortController()
+    controller.abort()
+    let checked = 0
+    const warnings = await Effect.runPromise(
+      analyzeMissingPackages(notebook, {
+        pythonPath: "/usr/bin/python3",
+        checkImport: (_python, name) =>
+          Effect.sync(() => {
+            checked += 1
+            return { name, available: true, detail: "ok" }
+          }),
+        signal: controller.signal
+      })
+    )
+    expect(warnings).toEqual([])
+    expect(checked).toBe(0)
+  })
+
+  it("does not turn an abort during the batch check into missing-package warnings", async () => {
+    const notebook = NotebookSchema.parse({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          cell_type: "code",
+          metadata: {},
+          execution_count: null,
+          outputs: [],
+          source: "import numpy"
+        }
+      ]
+    })
+    const controller = new AbortController()
+    const warnings = await Effect.runPromise(
+      analyzeMissingPackages(notebook, {
+        pythonPath: "/usr/bin/python3",
+        checkImport: (_python, name) =>
+          Effect.succeed({ name, available: false, detail: "aborted" }),
+        checkImports: (_python, modules) =>
+          Effect.sync(() => {
+            controller.abort()
+            return modules.map((name) => ({
+              name,
+              available: false,
+              detail: "aborted"
+            }))
+          }),
+        signal: controller.signal
+      })
+    )
+    expect(warnings).toEqual([])
+  })
+
 })

@@ -1,10 +1,11 @@
+import { sanitizeInline } from "../utils/markdown-safe.js"
 import { z } from "zod"
-import { tool } from "@opencode-ai/plugin"
-import { Effect } from "effect"
-import type { ToolContext } from "@opencode-ai/plugin"
+import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
+import type { ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
 import { errorToMessage } from "../domain/errors.js"
 import { DEFAULT_MAX_EXPORT_CHARS } from "../utils/limits.js"
+import { assertReadPermission } from "./_readPermission.js"
 
 const args = {
   filePath: z.string().describe("Absolute or relative path to the .ipynb file"),
@@ -20,7 +21,14 @@ const args = {
   outputPath: z
     .string()
     .optional()
-    .describe("Optional path to write the export to. If omitted, returns content in the tool output.")
+    .describe("Optional path to write the export to. If omitted, returns content in the tool output."),
+  maxExportChars: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .default(DEFAULT_MAX_EXPORT_CHARS)
+    .describe("Maximum characters returned in the tool output (default 60000). Files are written in full.")
 }
 
 export const ipynbExportTool = tool({
@@ -30,18 +38,19 @@ export const ipynbExportTool = tool({
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context)
     try {
-      const result = await Effect.runPromise(
+      await assertReadPermission(context, input.filePath)
+      const result = await runToolEffect(
         services.export.export(input.filePath, {
           format: input.format,
           includeOutputs: input.includeOutputs ?? false,
           includeErrors: input.includeErrors ?? true,
           outputPath: input.outputPath,
-          maxExportChars: DEFAULT_MAX_EXPORT_CHARS
+          maxExportChars: input.maxExportChars
         })
       )
       const head = result.writtenTo
-        ? `Exported ${result.cellCount} cells from \`${result.displayPath}\` to \`${result.writtenTo}\` (${result.format}).`
-        : `Exported ${result.cellCount} cells from \`${result.displayPath}\` as ${result.format} (no file written).`
+        ? `Exported ${result.cellCount} cells from \`${sanitizeInline(result.displayPath)}\` to \`${sanitizeInline(result.writtenTo ?? "")}\` (${result.format}).`
+        : `Exported ${result.cellCount} cells from \`${sanitizeInline(result.displayPath)}\` as ${result.format} (no file written).`
       const body = input.outputPath ? `${head}\n\n(File written successfully.)` : `${head}\n\n${result.rendered}`
       return {
         title: `Export ${input.filePath} as ${input.format}`,
@@ -55,6 +64,7 @@ export const ipynbExportTool = tool({
         }
       }
     } catch (err) {
+      rethrowPermissionDenied(err)
       const message = errorToMessage(err)
       return {
         title: `Export ${input.filePath} as ${input.format} (error)`,

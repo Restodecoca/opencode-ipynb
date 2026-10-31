@@ -5,6 +5,7 @@ export type TruncationHintKey =
   | "export"
   | "json"
   | "stream"
+  | "hard"
 
 export interface TruncationHintContext {
   readonly paramName: string
@@ -27,6 +28,8 @@ const EN_JSON = "... (json truncated, use ${paramName} to increase)"
 const PT_BR_JSON = "... (json truncado, aumente ${paramName})"
 const EN_STREAM = "... (stream truncated, use ${paramName} to increase)"
 const PT_BR_STREAM = "... (stream truncado, aumente ${paramName})"
+const EN_HARD = "... (truncated: hard response limit reached)"
+const PT_BR_HARD = "... (truncado: limite rígido de resposta atingido)"
 
 const TEMPLATES: Readonly<Record<TruncationHintKey, Readonly<Record<string, string>>>> = {
   output: { en: EN_OUTPUT, "pt-BR": PT_BR_OUTPUT },
@@ -34,7 +37,8 @@ const TEMPLATES: Readonly<Record<TruncationHintKey, Readonly<Record<string, stri
   traceback: { en: EN_TRACEBACK, "pt-BR": PT_BR_TRACEBACK },
   export: { en: EN_EXPORT, "pt-BR": PT_BR_EXPORT },
   json: { en: EN_JSON, "pt-BR": PT_BR_JSON },
-  stream: { en: EN_STREAM, "pt-BR": PT_BR_STREAM }
+  stream: { en: EN_STREAM, "pt-BR": PT_BR_STREAM },
+  hard: { en: EN_HARD, "pt-BR": PT_BR_HARD }
 }
 
 const resolveLocale = (locale: string | undefined): string => {

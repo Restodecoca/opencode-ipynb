@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
 import * as path from "node:path"
 import { Cause, Effect } from "effect"
 import { makePathService } from "../../src/services/PathService.js"
@@ -55,7 +55,7 @@ describeIf(realHelperEnabled(), "integration > scraping", () => {
       })
     )
     if (exit._tag === "Failure") {
-      const opt = Cause.failureOption(exit.cause)
+      const opt = Cause.findErrorOption(exit.cause)
       const e = opt._tag === "Some" ? (opt.value as { _tag?: string }) : undefined
       if (e?._tag === "NotebookExecution") {
         throw new Error("network required for scraping test")

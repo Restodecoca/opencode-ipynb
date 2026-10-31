@@ -1,0 +1,186 @@
+import { z } from "zod"
+import type { Plugin } from "@opencode/plugin"
+import type {
+  AnyToolDefinition,
+  ToolAttachment,
+  ToolContext,
+  ToolResult
+} from "./tool.js"
+
+type V2ToolEditor = Parameters<Plugin.Context["tool"]["transform"]>[0] extends (
+  editor: infer Editor
+) => void
+  ? Editor
+  : never
+
+export type V2ToolInfo = Parameters<V2ToolEditor["add"]>[0]
+export type V2ToolContext = Parameters<V2ToolInfo["execute"]>[1]
+type PermissionAssertInput = Parameters<Plugin.Context["permission"]["assert"]>[0]
+
+export interface V2ToolRegistration {
+  readonly name: string
+  readonly definition: AnyToolDefinition
+  readonly permission?: string
+}
+
+export interface V2FileContent {
+  readonly type: "file"
+  readonly uri: string
+  readonly mime: string
+  readonly name?: string
+}
+
+export type V2Content =
+  | { readonly type: "text"; readonly text: string }
+  | V2FileContent
+
+export interface V2ToolResult {
+  readonly content: string | ReadonlyArray<V2Content>
+  readonly metadata?: Record<string, unknown>
+}
+
+const jsonSchemaFor = (definition: AnyToolDefinition): V2ToolInfo["input"] =>
+  z.toJSONSchema(z.object(definition.args), {
+    io: "input"
+  }) as unknown as V2ToolInfo["input"]
+
+const toFileContent = (attachment: ToolAttachment): V2FileContent => {
+  const base: V2FileContent = {
+    type: "file",
+    uri: attachment.url,
+    mime: attachment.mime
+  }
+  return attachment.filename === undefined
+    ? base
+    : { ...base, name: attachment.filename }
+}
+
+const withoutUndefined = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item !== undefined)
+      .map((item) => withoutUndefined(item))
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, withoutUndefined(item)])
+    )
+  }
+  return value
+}
+
+export const toV2Result = (result: ToolResult): V2ToolResult => {
+  if (typeof result === "string") {
+    return { content: result }
+  }
+  const content: string | ReadonlyArray<V2Content> =
+    result.attachments && result.attachments.length > 0
+      ? [
+          { type: "text", text: result.output },
+          ...result.attachments.map(toFileContent)
+        ]
+      : result.output
+  const metadata = withoutUndefined({
+    ...(result.metadata ?? {}),
+    ...(result.title === undefined || result.title.length === 0
+      ? {}
+      : { title: result.title })
+  }) as Record<string, unknown>
+
+  return Object.keys(metadata).length > 0 ? { content, metadata } : { content }
+}
+
+/**
+ * V2 custom tools do not receive the V1 ToolContext shape. Adapt the V2 tool
+ * execution context, and route ctx.ask through the V2 permission domain so
+ * every write and execution still prompts (or is denied by explicit rules).
+ */
+export const toToolContext = (
+  pluginContext: Plugin.Context,
+  context: V2ToolContext,
+  pluginOptions: unknown
+): ToolContext => ({
+  sessionID: context.sessionID,
+  messageID: context.messageID,
+  agent: context.agent,
+  directory: pluginContext.location.directory,
+  worktree: pluginContext.location.project.directory,
+  abort: context.signal,
+  pluginOptions,
+  pluginScope: pluginContext,
+  metadata: (input) => {
+    void context
+      .progress({
+        ...(input.metadata ?? {}),
+        ...(input.title === undefined ? {} : { title: input.title })
+      })
+      .catch(() => {})
+  },
+  ask: async (input) => {
+    // V2 calls the execution permission "shell". Keep accepting the internal
+    // legacy name "bash" so older custom tools keep working.
+    const action = input.permission === "bash" ? "shell" : input.permission
+    await pluginContext.permission.assert({
+      sessionID: context.sessionID as PermissionAssertInput["sessionID"],
+      agent: context.agent as PermissionAssertInput["agent"],
+      source: {
+        type: "tool",
+        messageID: context.messageID,
+        id: context.id
+      },
+      action,
+      resources: [...input.patterns],
+      save: [...input.always],
+      metadata: input.metadata
+    })
+  }
+})
+
+export const toV2Tool = (
+  pluginContext: Plugin.Context,
+  registration: V2ToolRegistration,
+  pluginOptions: unknown = pluginContext.options
+): V2ToolInfo => {
+  const argsSchema = z.object(registration.definition.args)
+  return {
+    name: registration.name,
+    description: registration.definition.description,
+    input: jsonSchemaFor(registration.definition),
+    options: {
+      // Native tools (not Code Mode) so permissions surface on the tool call.
+      codemode: false,
+      ...(registration.permission === undefined
+        ? {}
+        : { permission: registration.permission })
+    },
+    async execute(rawInput, context) {
+      const parsed = argsSchema.safeParse(rawInput ?? {})
+      if (!parsed.success) {
+        const message = parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+          .join("; ")
+        return { content: `Error: ${message}`, metadata: { error: true, message } }
+      }
+      const result = await registration.definition.execute(
+        parsed.data as never,
+        toToolContext(pluginContext, context, pluginOptions)
+      )
+      return toV2Result(result)
+    }
+  }
+}
+
+export const registerV2Tools = async (
+  context: Plugin.Context,
+  registrations: ReadonlyArray<V2ToolRegistration>,
+  pluginOptions: unknown = context.options
+) =>
+  context.tool.transform((editor) => {
+    for (const registration of registrations) {
+      editor.add(toV2Tool(context, registration, pluginOptions))
+    }
+  })
+
+export type V2Registration = Awaited<ReturnType<typeof registerV2Tools>>

@@ -1,0 +1,6 @@
+# Test/CI dependencies for the real-helper and example-notebook suites.
+# The plugin itself never installs these automatically.
+-r requirements.txt
+numpy
+matplotlib
+scikit-learn

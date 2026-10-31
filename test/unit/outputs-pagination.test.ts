@@ -3,15 +3,13 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolContext } from "../../src/tool.js"
 import {
   makePathService,
   makePermissionService,
   makeNotebookFileService,
   makeOutputImpl
 } from "../../src/services/index.js"
-
-const FIXTURES = path.resolve(__dirname, "..", "fixtures")
 
 const makeFakeContext = (directory: string, worktree: string): ToolContext =>
   ({
@@ -409,4 +407,21 @@ describe("ipynb_read tool > swapped-range validation", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+  it("caps limit<=0 at 500 entries", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-pag-cap-"))
+    try {
+      const cells = Array.from({ length: 600 }, (_, index) =>
+        codeCell(`value_${index} = ${index}`, [streamOutput(`${index}\\n`)])
+      )
+      const file = writeNotebook(dir, "many.ipynb", cells)
+      const output = buildOutput(dir, dir)
+      const result = await runOrThrow(output.listOutputs(file, 0, 0))
+      expect(result.total).toBe(600)
+      expect(result.entries.length).toBe(500)
+      expect(result.limit).toBe(500)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
 })

@@ -1,10 +1,11 @@
 import { z } from "zod"
-import { tool } from "@opencode-ai/plugin"
+import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
 import { Effect } from "effect"
-import type { ToolAttachment, ToolContext } from "@opencode-ai/plugin"
+import type { ToolAttachment, ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
 import { errorToMessage } from "../domain/errors.js"
 import { resolveToolOptions } from "./_resolveOptions.js"
+import { assertReadPermission } from "./_readPermission.js"
 
 const args = {
   filePath: z.string().describe("Absolute or relative path to the .ipynb file"),
@@ -32,7 +33,7 @@ const args = {
     .positive()
     .optional()
     .describe(
-      "Maximum number of output characters per cell; falls back to ipynb.defaultMaxOutputChars, then 6000"
+      "Maximum number of output characters per cell; falls back to the plugin `defaultMaxOutputChars` option, then 6000"
     )
 }
 
@@ -78,7 +79,7 @@ const readArgsSchema = z.object(args).superRefine((input, ctx) => {
 
 export const ipynbReadTool = tool({
   description:
-    "Read a single cell or a range of cells from a Jupyter Notebook. Returns markdown with source, errors, and optional output payloads. Images/base64 are omitted by default; set includeImages=true to receive image attachments.",
+    "Read a single cell or a range of cells from a Jupyter Notebook (cellIndex is 0-based). Returns markdown with source, errors, and optional output payloads. Images/base64 are omitted by default; set includeImages=true to receive image attachments.",
   args,
   async execute(rawInput, context: ToolContext) {
     const parsed = readArgsSchema.safeParse(rawInput)
@@ -95,13 +96,17 @@ export const ipynbReadTool = tool({
     const input = parsed.data
     const services = buildServices(context)
     try {
-      const pluginOpts = resolveToolOptions()
+      await assertReadPermission(context, input.filePath)
+      const pluginOpts = resolveToolOptions(context)
       const requestOptions = {
         ...input,
+        // Requesting images implies reading outputs; otherwise there is
+        // nothing to attach.
+        includeOutputs: input.includeOutputs || input.includeImages,
         saveImages: input.includeImages,
         maxOutputChars: input.maxOutputChars ?? pluginOpts.defaultMaxOutputChars
       }
-      const result = await Effect.runPromise(
+      const result = await runToolEffect(
         Effect.gen(function* () {
           if (input.cellIndex !== undefined) {
             return yield* services.read.readCell(input.filePath, input.cellIndex, requestOptions)
@@ -132,6 +137,7 @@ export const ipynbReadTool = tool({
       }
       return toolResult
     } catch (err) {
+      rethrowPermissionDenied(err)
       const message = errorToMessage(err)
       return {
         title: `Read ${input.filePath} (error)`,

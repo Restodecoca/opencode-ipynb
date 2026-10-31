@@ -1,5 +1,4 @@
-import { Context, Effect } from "effect"
-import * as fsp from "node:fs/promises"
+import { Effect } from "effect"
 import * as path from "node:path"
 import {
   NotebookNotFoundError,
@@ -9,13 +8,20 @@ import {
   PathOutsideWorktreeError,
   PermissionDeniedError
 } from "../domain/errors.js"
-import { NotebookFileService, type NotebookFileServiceShape } from "./NotebookFileService.js"
-import { PathService, type PathServiceShape } from "./PathService.js"
-import { PermissionService, type PermissionServiceShape } from "./PermissionService.js"
+import type { NotebookFileServiceShape } from "./NotebookFileService.js"
+import { resolveDeepReal } from "./PermissionService.js"
+import type { PathServiceShape } from "./PathService.js"
+import {
+  type PermissionServiceShape
+} from "./PermissionService.js"
 import { cellSource, type NotebookRaw } from "../domain/notebook.js"
-import { formatNotebookAsMarkdown, formatNotebookAsPython } from "../format/diff.js"
-import { truncate } from "../utils/truncate.js"
-import { DEFAULT_MAX_EXPORT_CHARS } from "../utils/limits.js"
+import { formatNotebookAsMarkdown, formatNotebookAsPython } from "../format/notebook.js"
+import { isAttachableImageMime } from "../utils/mime.js"
+import { truncateMarkdown } from "../utils/markdown-safe.js"
+import {
+  DEFAULT_MAX_EXPORT_CHARS,
+  MAX_READ_RESPONSE_CHARS
+} from "../utils/limits.js"
 import { formatOutputs } from "../format/outputs.js"
 import { detectOutputKind } from "../domain/output.js"
 import type { CodeCellRaw } from "../domain/cell.js"
@@ -55,13 +61,18 @@ export interface NotebookExportServiceShape {
   >
 }
 
-export class NotebookExportService extends Context.Tag("@ipynb/NotebookExportService")<
-  NotebookExportService,
-  NotebookExportServiceShape
->() {}
+const realTarget = async (target: string): Promise<string> =>
+  resolveDeepReal(path.resolve(target))
 
 const yamlScalar = (s: string): string =>
-  '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'
+  '"' +
+  s
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t") +
+  '"'
 
 const buildFrontMatter = (params: {
   readonly displayPath: string
@@ -184,10 +195,54 @@ const makeExportImpl = (
       const notebook = yield* fileSvc.read(abs)
       const displayPath = pathSvc.toDisplay(abs)
 
-      const cells = notebook.cells.map((cell) => ({
-        cell_type: cell.cell_type,
-        source: cellSource(cell)
-      }))
+      const rewriteAttachments = (
+        source: string,
+        attachments: unknown
+      ): string => {
+        if (attachments === null || typeof attachments !== "object") return source
+        const data = attachments as Record<string, unknown>
+        return source.replace(/attachment:([^)>\s]+)/g, (match, name: string) => {
+          const entry = data[name]
+          if (entry === null || typeof entry !== "object") return match
+          for (const [mime, value] of Object.entries(
+            entry as Record<string, unknown>
+          )) {
+            if (isAttachableImageMime(mime) && typeof value === "string") {
+              return `data:${mime};base64,${value}`
+            }
+          }
+          return `(attachment ${name} omitted: unsupported image type)`
+        })
+      }
+      const cells = notebook.cells.map((cell) => {
+        const attachments =
+          "attachments" in cell ? cell.attachments : undefined
+        let source = cellSource(cell)
+        const imageRefs: string[] = []
+        if (options.format === "markdown") {
+          if (cell.cell_type === "markdown") {
+            source = rewriteAttachments(source, attachments)
+          }
+          if (cell.cell_type === "raw" && attachments !== undefined) {
+            const data = attachments as Record<string, unknown>
+            for (const [name, entry] of Object.entries(data)) {
+              if (entry === null || typeof entry !== "object") continue
+              for (const [mime, value] of Object.entries(
+                entry as Record<string, unknown>
+              )) {
+                if (isAttachableImageMime(mime) && typeof value === "string") {
+                  imageRefs.push(`![${name}](data:${mime};base64,${value})`)
+                }
+              }
+            }
+          }
+        }
+        return {
+          cell_type: cell.cell_type,
+          source,
+          ...(imageRefs.length > 0 ? { attachments: imageRefs } : {})
+        }
+      })
 
       let rendered = ""
       let frontMatter: string | undefined
@@ -204,8 +259,10 @@ const makeExportImpl = (
                 : code.outputs.filter((out) => detectOutputKind(out) === "error")
               const section = formatOutputs({ ...code, outputs }, {
                 includeImages: false,
-                maxOutputChars: 2_000,
-                maxTracebackChars: 4_000
+                // File exports are meant to be complete; maxExportChars only
+                // caps the text returned to the model.
+                maxOutputChars: Number.MAX_SAFE_INTEGER,
+                maxTracebackChars: Number.MAX_SAFE_INTEGER
               })
               if (!section || section === "(no output)") return undefined
               return section
@@ -227,37 +284,67 @@ const makeExportImpl = (
         rendered = buildSummary(notebook)
       }
 
-      const truncated = truncate(rendered, options.maxExportChars, "truncated export")
-      const finalRendered = truncated.text
+      const hardLimited = options.maxExportChars > MAX_READ_RESPONSE_CHARS
+      const truncated = truncateMarkdown(
+        rendered,
+        Math.min(options.maxExportChars, MAX_READ_RESPONSE_CHARS),
+        hardLimited
+          ? "\n... (truncated: hard response limit reached)"
+          : "\n... (export truncated, use maxExportChars to increase)"
+      )
 
       let writtenTo: string | undefined
+      let finalRendered = truncated
       if (options.outputPath) {
         const outAbs = yield* pathSvc.resolve(options.outputPath)
         yield* pathSvc.ensureInsideWorktree(outAbs)
+        const sourceReal = yield* Effect.promise(() => realTarget(abs))
+        const outputReal = yield* Effect.promise(() => realTarget(outAbs))
+        const isNotebookName = (value: string): boolean => {
+          let base = path.basename(value).toLowerCase()
+          // Windows strips trailing dots/spaces, so "n.ipynb " is "n.ipynb".
+          if (process.platform === "win32") base = base.replace(/[ .]+$/, "")
+          return base.endsWith(".ipynb")
+        }
+        if (
+          isNotebookName(outAbs) ||
+          isNotebookName(outputReal) ||
+          path.resolve(outAbs) === path.resolve(abs) ||
+          sourceReal === outputReal
+        ) {
+          return yield* new NotebookValidationError({
+            message:
+              "outputPath must not overwrite a notebook (.ipynb) file, including through a symlink",
+            filePath: abs,
+            issues: ["refusing to write an export over a .ipynb file"]
+          })
+        }
+        // Pin the resolved destination: a symlink swapped during the
+        // permission prompt must not redirect the write to a new target.
+        const writeTarget = outputReal
+        const lexicalPaths = yield* permSvc.aliases(outAbs)
+        const pinnedPaths = yield* permSvc.aliases(writeTarget)
+        const permissionPaths = [
+          ...new Set([...lexicalPaths, ...pinnedPaths])
+        ]
         yield* permSvc.ask({
           kind: "edit",
           action: "ipynb_export_write",
-          patterns: [outAbs],
-          always: [outAbs],
+          patterns: permissionPaths,
+          always: permissionPaths,
           metadata: {
             sourceFile: abs,
-            outputPath: outAbs,
+            outputPath: writeTarget,
             format: options.format,
             cellCount: cells.length,
-            length: finalRendered.length
+            length: rendered.length
           }
         })
-        yield* Effect.tryPromise({
-          try: async () => {
-            await fsp.mkdir(path.dirname(outAbs), { recursive: true })
-            await fsp.writeFile(outAbs, finalRendered, "utf8")
-          },
-          catch: (err) =>
-            new NotebookWriteError({
-              message: err instanceof Error ? err.message : String(err),
-              filePath: outAbs
-            })
+        // The tool output is capped, but a file export must be complete.
+        yield* pathSvc.writeFileSafe(writeTarget, rendered, {
+          noFollowFinal: true
         })
+        finalRendered = rendered
         writtenTo = pathSvc.toDisplay(outAbs)
       }
 

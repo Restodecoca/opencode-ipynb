@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import {
-  analyzeExecutionOrder,
   analyzeExecutionOrderWarnings,
   formatInspectSummary
 } from "../../src/services/NotebookInspectService.js"
+import { analyzeExecutionOrder } from "../../src/utils/execution-order.js"
 import { inspectCell } from "../../src/format/diagnostics.js"
 import { NotebookSchema } from "../../src/domain/notebook.js"
 import type { NotebookRaw } from "../../src/domain/notebook.js"
@@ -113,6 +113,8 @@ describe("formatInspectSummary > execution order section", () => {
       displayPath: "x.ipynb",
       notebook: nb,
       cells: nb.cells.map((c, i) => inspectCell(c, i)),
+      includeMetadata: false,
+      includeOutputsSummary: true,
       totalCells: nb.cells.length,
       truncated: false,
       executionOrderWarnings: []
@@ -129,6 +131,8 @@ describe("formatInspectSummary > execution order section", () => {
       displayPath: "x.ipynb",
       notebook: nb,
       cells: nb.cells.map((c, i) => inspectCell(c, i)),
+      includeMetadata: false,
+      includeOutputsSummary: true,
       totalCells: nb.cells.length,
       truncated: false,
       executionOrderWarnings: analyzeExecutionOrderWarnings(nb)

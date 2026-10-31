@@ -55,6 +55,35 @@ describe("NotebookFileService.withFileLock > concurrency", () => {
     }
   })
 
+  it("shares the same lock across service instances (one per tool call)", async () => {
+    const dir = makeTmpDir()
+    const file = path.join(dir, "shared.ipynb")
+    fs.writeFileSync(file, "")
+    const svcA = makeNotebookFileService()
+    const svcB = makeNotebookFileService()
+    try {
+      const critical: Array<{ start: number; end: number }> = []
+      const section = () =>
+        Effect.gen(function* () {
+          const start = performance.now()
+          yield* Effect.sleep(60)
+          critical.push({ start, end: performance.now() })
+        })
+      await Promise.all([
+        runEff(svcA.withFileLock(file, section())),
+        runEff(svcB.withFileLock(file, section()))
+      ])
+      critical.sort((a, b) => a.start - b.start)
+      const first = critical[0]
+      const second = critical[1]
+      expect(first).toBeDefined()
+      expect(second).toBeDefined()
+      expect(second!.start).toBeGreaterThanOrEqual(first!.end - 1)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("does not block on different files", async () => {
     const dir = makeTmpDir()
     const fileA = path.join(dir, "a.ipynb")

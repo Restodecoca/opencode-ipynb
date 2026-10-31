@@ -1,6 +1,6 @@
 # Publish workflow for opencode-ipynb.
 # The publish job only runs on GitHub releases (`published` event). Cutting a release on GitHub is the trigger.
-# Required secret: `NPM_TOKEN` (an npm automation token with publish rights for `@opencode-ipynb`/the configured name).
+# Required secret: `NPM_TOKEN` (an npm automation token with publish rights for `opencode-ipynb`/the configured name).
 
 name: Publish
 
@@ -24,16 +24,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "Release tag $GITHUB_REF_NAME does not match package.json version $VERSION"
+            exit 1
+          fi
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.4"
+
+      - name: Setup Node.js for pyright
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pyright
+        run: npm install -g pyright@1.1.414
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python test dependencies
+        run: python -m pip install -r python/requirements-test.txt
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Typecheck
         run: bun run typecheck
+
+      - name: Typecheck tests
+        run: bun run typecheck:tests
 
       - name: Test
         env:
@@ -52,4 +80,4 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx --yes npm@latest publish --provenance --access public
+        run: npx --yes npm@10.9.2 publish --provenance --access public

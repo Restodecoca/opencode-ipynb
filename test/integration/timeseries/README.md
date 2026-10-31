@@ -24,9 +24,9 @@ All code cells ship with `outputs: []` and `execution_count: null`.
 ## Plugin walkthrough
 
 ```text
-ipynb_inspect({ filePath: "examples/timeseries/notebook.ipynb" })
-ipynb_read({ filePath: "examples/timeseries/notebook.ipynb", cellIndex: 1, includeOutputs: true })
-ipynb_run({ filePath: "examples/timeseries/notebook.ipynb", mode: "all", save: true })
+ipynb_inspect({ filePath: "test/integration/timeseries/notebook.ipynb" })
+ipynb_read({ filePath: "test/integration/timeseries/notebook.ipynb", cellIndex: 1, includeOutputs: true })
+ipynb_run({ filePath: "test/integration/timeseries/notebook.ipynb", mode: "all", save: true })
 ```
 
 After `ipynb_run`, the printed output is exactly:
@@ -37,7 +37,7 @@ window=9, y_smooth.shape=(200,)
 min=-0.886, max=0.907, mean=0.020
 ```
 
-(values vary slightly across numpy versions, but the four output lines are
+(values vary slightly across numpy versions, but the three output lines are
 stable in shape and the smoothed series is centred near zero because the
 noise is zero-mean.)
 
@@ -45,8 +45,8 @@ noise is zero-mean.)
 
 - Use `ipynb_edit({ cellIndex: 2, source: "..." })` to swap the uniform
   kernel for a Gaussian one — the plugin asks for permission once and shows
-  you a textual diff of the changed cell.
-- Use `ipynb_outputs({ action: "list" })` to skim the produced outputs
+  you a concise confirmation of the changed cell.
+- Use `ipynb_outputs({ operation: "list" })` to skim the produced outputs
   without re-running the kernel.
 - Use `ipynb_export({ format: "python" })` to ship the smoothing routine
   as a standalone script.
