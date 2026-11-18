@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import queue
 import threading
 import time
 import traceback
@@ -880,6 +881,55 @@ def _run_serve_request(
     return response
 
 
+def _start_request_reader(
+    client: Any,
+    preempt: threading.Event,
+) -> "queue.Queue[Optional[Dict[str, Any]]]":
+    """Read requests on one thread so a queued shutdown can preempt a cell.
+
+    The serve loop executes cells synchronously; if it also owned the read,
+    a ``shutdown`` sent during a long cell would only be seen afterwards. The
+    reader enqueues requests in order and, on ``shutdown`` (or EOF), kills the
+    kernel group before delivering the sentinel so the in-flight cell raises.
+    """
+    requests: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue()
+
+    def read() -> None:
+        while True:
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                requests.put(None)
+                return
+            if line == "":
+                requests.put(None)
+                return
+            try:
+                req = json.loads(line)
+            except Exception:
+                requests.put({"__invalid_json__": line})
+                continue
+            if isinstance(req, dict) and req.get("mode") == "shutdown":
+                # Kill only if the loop is busy with a cell; the loop clears the
+                # event the moment it starts waiting for the next request, so a
+                # shutdown that is already queued ahead of finished work does
+                # not tear down the kernel mid-run.
+                if preempt.is_set():
+                    try:
+                        _kill_kernel_process_group(client)
+                    except Exception:
+                        pass
+                requests.put(None)
+                return
+            if isinstance(req, dict):
+                requests.put(req)
+            else:
+                requests.put({"__invalid_request__": True})
+
+    threading.Thread(target=read, name="request-reader", daemon=True).start()
+    return requests
+
+
 def _start_parent_watchdog() -> None:
     """Exit and kill the kernel when the parent process disappears.
 
@@ -1040,21 +1090,22 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
     _write_response(ready_response)
 
     _start_parent_watchdog()
+    busy = threading.Event()
+    incoming = _start_request_reader(client, busy)
     requests_handled = 0
     try:
         while True:
-            try:
-                req = _read_request_line()
-            except EOFError:
+            req = incoming.get()
+            if req is None:
                 break
-            except ValueError as exc:
+            if "__invalid_json__" in req:
                 _write_response(
                     _error_response(
                         None,
                         time.time(),
                         "PythonRunnerError",
                         "InvalidJSON",
-                        f"could not parse request: {exc}",
+                        "could not parse request",
                         -1,
                     )
                 )
@@ -1080,6 +1131,7 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
             if not isinstance(request_nonce, str):
                 request_nonce = None
 
+            busy.set()
             try:
                 response = _run_serve_request(req, client, nb, file_path)
             except KernelBroken as exc:
@@ -1110,6 +1162,7 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
                     request_id=req_id,
                 )
 
+            busy.clear()
             _write_response(response, request_nonce)
             requests_handled += 1
     except KeyboardInterrupt:
