@@ -282,3 +282,42 @@ describe("object keys that use escape sequences", () => {
     expect(result.text).toBe(`{"a\\u0041b": 1, "z": 3}`)
   })
 })
+
+describe("array growth keeps the stored separator layout", () => {
+  it("appends a new item on its own line in a multiline notebook", async () => {
+    const { makeEditImpl, makeNotebookFileService, makePathService, makePermissionService } = await import(
+      "../../src/services/index.js"
+    )
+    const { Effect } = await import("effect")
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-grow-sep-"))
+    const file = path.join(dir, "n.ipynb")
+    const body = `{\n "cells": [\n  {\n   "cell_type": "code",\n   "execution_count": null,\n   "metadata": {},\n   "outputs": [],\n   "source": [\n    "print(1)"\n   ]\n  }\n ],\n "metadata": {},\n "nbformat": 4,\n "nbformat_minor": 5\n}\n`
+    fs.writeFileSync(file, body)
+    const ctx = {
+      sessionID: "t",
+      messageID: "t",
+      agent: "t",
+      directory: dir,
+      worktree: dir,
+      abort: new AbortController().signal,
+      metadata: () => {},
+      ask: async () => {}
+    } as never
+    try {
+      const edit = makeEditImpl(
+        makePathService({ directory: dir, worktree: dir, platform: process.platform }),
+        makeNotebookFileService(),
+        makePermissionService(ctx)
+      )
+      await Effect.runPromise(edit.insertCell(file, "code", "print(2)", 1))
+      const after = fs.readFileSync(file, "utf8")
+      expect(after).toContain(`  },\n  {\n`)
+      expect(after).not.toContain("},{")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

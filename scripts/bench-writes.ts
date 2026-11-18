@@ -413,6 +413,7 @@ const main = async (): Promise<void> => {
     `one-cell edit in a ${largeEdit.mb.toFixed(1)}MB / 64k-cell notebook: ${largeEdit.ms.toFixed(0)}ms, rss +${largeEdit.rssDeltaMb.toFixed(0)}MB`
   )
   const failures: string[] = []
+  if (!patchAllocation.ok) failures.push("patchAllocation (see bench-alloc.ts)")
   // These are absolute budgets, not a discriminator between implementations:
   // 18 lazy runs measured 421-585 ms / 91-231 MB and 5 eager runs 464-663 ms /
   // 213-288 MB, so this machine's variance overlaps the two. The ceilings only

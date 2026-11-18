@@ -5,7 +5,7 @@ import { replaceFile } from "./utils/atomic-replace.js"
 import * as path from "node:path"
 import type { NotebookVirtualDocument } from "./lsp.js"
 import { sanitizeNotebookText } from "./notebook-diagnostics.js"
-import { absoluteDriveRoot } from "./utils/paths.js"
+import { pathInside } from "./utils/paths.js"
 import { beforeRenameHook } from "./utils/rename-hook.js"
 import {
   type Warning,
@@ -46,19 +46,6 @@ const LEGACY_DIRECTORY = ".opencode/ipynb-lsp"
 const LEGACY_FILE = /\.[0-9a-f]{16}\.py$/
 const MAX_AGE_MS = 60 * 60 * 1000
 
-const inside = (root: string, target: string): boolean => {
-  const relative = path.relative(
-    absoluteDriveRoot(root),
-    absoluteDriveRoot(target)
-  )
-  return (
-    relative === "" ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative))
-  )
-}
-
 const realPath = (filePath: string): string => {
   try {
     return fs.realpathSync(filePath)
@@ -77,7 +64,7 @@ export const materializedPath = (filePath: string, root?: string): string => {
   const realFile = realPath(filePath)
   if (root !== undefined) {
     const rootReal = realPath(root)
-    if (inside(rootReal, realFile)) {
+    if (pathInside(rootReal, realFile)) {
       const lexicalRoot = path.resolve(root)
       const relative = path.relative(rootReal, realFile)
       return path.join(lexicalRoot, path.dirname(relative), fileNameFor(filePath))
@@ -116,7 +103,7 @@ const writeSidecar = async (
   const rootReal = await fsp.realpath(worktree)
   const target = materializedPath(filePath, worktree)
   const directoryReal = await fsp.realpath(path.dirname(target))
-  if (!inside(rootReal, directoryReal)) {
+  if (!pathInside(rootReal, directoryReal)) {
     throw new Error(`Refusing to write outside the session directory: ${target}`)
   }
   const safeTarget = path.join(directoryReal, path.basename(target))
@@ -148,7 +135,7 @@ const writeSidecar = async (
     await fsp.writeFile(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 })
     await beforeRenameHook(safeTarget)
     const freshDir = await fsp.realpath(path.dirname(safeTarget))
-    if (!inside(rootReal, freshDir)) {
+    if (!pathInside(rootReal, freshDir)) {
       throw new Error(`Refusing to write outside the session directory: ${freshDir}`)
     }
     const freshTarget = path.join(freshDir, path.basename(safeTarget))
@@ -190,7 +177,7 @@ const cleanupLegacyDirectory = async (
     }
     return undefined
   })
-  if (real === undefined || !inside(rootReal, real)) {
+  if (real === undefined || !pathInside(rootReal, real)) {
     throw new Error(`Refusing to clean a materialized directory outside the worktree`)
   }
   const now = Date.now()
@@ -323,7 +310,7 @@ export const hasMaterializedDocument = async (
       }
       return undefined
     })
-  if (targetDirReal === undefined || !inside(rootReal, targetDirReal)) return false
+  if (targetDirReal === undefined || !pathInside(rootReal, targetDirReal)) return false
   const stat = await fsp.lstat(target).catch((error: unknown) => {
     if (!isMissing(error)) {
       sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${target}`))
@@ -361,7 +348,7 @@ export const cleanupVirtualDocuments = async (
             }
             return undefined
           })
-        if (parentReal === undefined || !inside(rootReal, parentReal)) return
+        if (parentReal === undefined || !pathInside(rootReal, parentReal)) return
         const target = path.join(parentReal, path.basename(file))
         const stat = await fsp.lstat(target).catch((error: unknown) => {
           if (!isMissing(error)) {

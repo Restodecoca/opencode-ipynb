@@ -131,9 +131,3 @@ export const rewriteNotebookTextDetailed = (
     ...(patched.reason === undefined ? {} : { reason: patched.reason })
   }
 }
-
-export const rewriteNotebookText = (
-  previousText: string,
-  notebook: unknown,
-  format: NotebookFormat
-): string => rewriteNotebookTextDetailed(previousText, notebook, format).text

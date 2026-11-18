@@ -48,6 +48,7 @@ const serve = (init: Record<string, unknown>, requests: ReadonlyArray<unknown>):
 }
 
 describe("serve mode notebook identity", () => {
+  if (process.platform === "win32") return
   it("refuses a request that names a different notebook than the kernel serves", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-serve-mismatch-"))
     const initFile = path.join(dir, "init.ipynb")

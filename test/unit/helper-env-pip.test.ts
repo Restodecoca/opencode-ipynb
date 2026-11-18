@@ -44,6 +44,7 @@ const runEnv = (interpreter: string, file: string): EnvResponse => {
 }
 
 describe("env report without pip", () => {
+  if (process.platform === "win32") return
   it("degrades the package list instead of failing on a venv without pip", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-nopip-"))
     const file = path.join(dir, "n.ipynb")

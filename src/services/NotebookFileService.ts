@@ -12,7 +12,7 @@ import {
 } from "../domain/errors.js"
 import { NotebookSchema, applyNotebookDefaults, type NotebookRaw } from "../domain/notebook.js"
 import { MAX_JSON_DEPTH, type PatchFailureReason, type WriteMode } from "../utils/json.js"
-import { absoluteDriveRoot } from "../utils/paths.js"
+import { pathInside } from "../utils/paths.js"
 import { realpathWithRetry } from "../utils/realpath.js"
 import { type WarningSink, warningFrom } from "../utils/warnings.js"
 
@@ -79,19 +79,6 @@ const probeStat = async (
     }
     return undefined
   }
-}
-
-const inside = (root: string, target: string): boolean => {
-  const relative = path.relative(
-    absoluteDriveRoot(root),
-    absoluteDriveRoot(target)
-  )
-  return (
-    relative === "" ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative))
-  )
 }
 
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
@@ -189,7 +176,7 @@ const buildFileService = (
     if (worktree === undefined) return filePath
     const root = await realpathWithRetry(worktree).catch(() => worktree)
     const real = await realpathWithRetry(filePath)
-    if (!inside(root, real)) {
+    if (!pathInside(root, real)) {
       throw new PathOutsideWorktreeError({
         message: "path resolves outside of the worktree (symlink)",
         filePath,
@@ -247,7 +234,7 @@ const buildFileService = (
             worktree === undefined
               ? await realpathWithRetry(resolved).catch(() => resolved)
               : resolved
-          if (root !== undefined && !inside(root, target)) {
+          if (root !== undefined && !pathInside(root, target)) {
             throw new PathOutsideWorktreeError({
               message: "path resolves outside of the worktree (symlink swap)",
               filePath,
@@ -504,7 +491,7 @@ const buildFileService = (
               if (next === probe) break
               probe = next
             }
-            if (ancestorReal === undefined || !inside(root, ancestorReal)) {
+            if (ancestorReal === undefined || !pathInside(root, ancestorReal)) {
               throw new PathOutsideWorktreeError({
                 message: "path resolves outside of the worktree (symlink)",
                 filePath,
@@ -518,7 +505,7 @@ const buildFileService = (
               ? (await probeRealpath(warningSink, dir)) ?? dir
               : await (async () => {
                   const real = await realpathWithRetry(dir)
-                  if (!inside(root!, real)) {
+                  if (!pathInside(root!, real)) {
                     throw new PathOutsideWorktreeError({
                       message: "path resolves outside of the worktree (symlink)",
                       filePath,
@@ -531,7 +518,7 @@ const buildFileService = (
             options?.noFollowFinal === true
               ? undefined
               : await probeRealpath(warningSink, filePath)
-          if (root !== undefined && fileReal !== undefined && !inside(root, fileReal)) {
+          if (root !== undefined && fileReal !== undefined && !pathInside(root, fileReal)) {
             throw new PathOutsideWorktreeError({
               message: "path resolves outside of the worktree (symlink)",
               filePath,
@@ -617,7 +604,7 @@ const buildFileService = (
                 filePath
               })
             }
-            if (root !== undefined && !inside(root, freshDir)) {
+            if (root !== undefined && !pathInside(root, freshDir)) {
               throw new PathOutsideWorktreeError({
                 message: "path resolves outside of the worktree (symlink swap)",
                 filePath,
@@ -625,7 +612,7 @@ const buildFileService = (
               })
             }
             const rechecked = await probeRealpath(warningSink, path.dirname(target))
-            if (rechecked === undefined || (root !== undefined && !inside(root, rechecked))) {
+            if (rechecked === undefined || (root !== undefined && !pathInside(root, rechecked))) {
               throw new PathOutsideWorktreeError({
                 message: "path resolves outside of the worktree (symlink swap)",
                 filePath,
@@ -795,5 +782,3 @@ const buildFileService = (
 }
 
 export const makeNotebookFileService = buildFileService
-
-export const _schemas: { readonly NotebookSchema: typeof NotebookSchema } = { NotebookSchema }

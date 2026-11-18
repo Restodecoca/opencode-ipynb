@@ -27,7 +27,7 @@ const args = {
     .positive()
     .optional()
     .describe(
-      "Timeout in milliseconds for each executed cell (default 120000, from plugin options). A multi-cell run may take up to that long per cell."
+      "Timeout in milliseconds for each executed cell (default 120000, from plugin options). A request is aborted once it exceeds twice this budget plus five seconds, so a multi-cell run should keep its total work within that window."
     ),
   save: z.boolean().optional().default(true).describe("Persist outputs to the notebook (default: true)"),
   workingDirectory: z.string().optional().describe("Working directory for the one-shot Python runner (not supported with warmKernel)"),

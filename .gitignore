@@ -6,7 +6,6 @@ dist/
 .env.local
 .idea/
 .vscode/
-*.tsbuildinfo
 .bun/
 .pytest_cache/
 __pycache__/
@@ -14,6 +13,11 @@ __pycache__/
 .venv/
 venv/
 .tsbuildinfo
+
+# Build and write artifacts that must never be committed
+*.tgz
+*.bak
+*.tmp
 
 # Contributor-only docs that are NOT shipped to npm and NOT versioned in git.
 # They are kept locally for development and live in AGENTS.md / TODO.md,

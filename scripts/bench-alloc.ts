@@ -66,7 +66,7 @@ console.log(
 )
 if (median > LIMIT_MB) {
   console.error(
-    `FAIL: median patch allocation ${median.toFixed(1)}MB exceeds ${LIMIT_MB}MB (the eager node tree measured ~132MB)`
+    `FAIL: median patch allocation ${median.toFixed(1)}MB exceeds ${LIMIT_MB}MB (the eager node tree measured 161-171MB)`
   )
   process.exit(1)
 }

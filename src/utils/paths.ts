@@ -78,3 +78,20 @@ export const makeRelative = (
 }
 
 export const toForwardSlashes = (p: string): string => p.replace(/\\/g, "/")
+
+export const pathInside = (
+  root: string,
+  target: string,
+  platform: NodeJS.Platform = process.platform
+): boolean => {
+  const relative = path.relative(
+    absoluteDriveRoot(root, platform),
+    absoluteDriveRoot(target, platform)
+  )
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
+  )
+}

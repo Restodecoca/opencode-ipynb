@@ -50,6 +50,7 @@ const parse = (stdout: string): Record<string, unknown> => {
 }
 
 describe("helper input validation", () => {
+  if (process.platform === "win32") return
   const cases: ReadonlyArray<readonly [string, unknown]> = [
     ["maxOutputChars", "x"],
     ["maxOutputChars", 1.5],

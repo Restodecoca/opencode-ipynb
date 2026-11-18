@@ -3,21 +3,8 @@ import { promises as fsp } from "node:fs"
 import * as path from "node:path"
 import type { ToolContext } from "../tool.js"
 import { PermissionDeniedError } from "../domain/errors.js"
-import { absoluteDriveRoot } from "../utils/paths.js"
+import { pathInside } from "../utils/paths.js"
 import { type WarningSink, warningFrom } from "../utils/warnings.js"
-
-const inside = (root: string, target: string): boolean => {
-  const relative = path.relative(
-    absoluteDriveRoot(root),
-    absoluteDriveRoot(target)
-  )
-  return (
-    relative === "" ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative))
-  )
-}
 
 const isMissingPath = (error: unknown): boolean => {
   const code = (error as NodeJS.ErrnoException | undefined)?.code
@@ -90,7 +77,7 @@ export const permissionAliases = async (
     if (realRoot !== undefined) roots.add(path.resolve(realRoot))
     for (const rootAbs of roots) {
       for (const candidate of [absolute, resolved]) {
-        if (!inside(rootAbs, candidate)) continue
+        if (!pathInside(rootAbs, candidate)) continue
         const relative = path.relative(rootAbs, candidate)
         if (relative.length > 0) addWithSlashes(relative)
       }

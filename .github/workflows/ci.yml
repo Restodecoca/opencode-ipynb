@@ -78,8 +78,10 @@ jobs:
             fi
             attempt=$((attempt + 1))
           done
-          cp "test-run-$attempt.log" coverage.txt
-          grep -E 'All files' "test-run-$attempt.log" > coverage-summary.txt || true
+          # After the loop `attempt` is one past the last run when every try failed.
+          last=$(( attempt > 3 ? 3 : attempt ))
+          cp "test-run-$last.log" coverage.txt
+          grep -E 'All files' "test-run-$last.log" > coverage-summary.txt || true
           awk -F'|' '/All files/ { found=1; gsub(/ /,"",$3); if ($3+0 < 80) { print "Line coverage below 80%"; exit 1 } } END { if (!found) { print "Coverage summary not found"; exit 2 } }' coverage-summary.txt
           exit "$status"
 
