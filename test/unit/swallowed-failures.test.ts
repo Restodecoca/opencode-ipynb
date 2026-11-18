@@ -17,8 +17,7 @@ import type { NotebookRaw } from "../../src/domain/notebook.js"
 import {
   cleanupVirtualDocuments,
   hasMaterializedDocument,
-  materializeVirtualDocument,
-  materializedPath
+  materializeVirtualDocument
 } from "../../src/virtual-materialize.js"
 import { buildNotebookVirtualDocument } from "../../src/lsp.js"
 import {
@@ -624,9 +623,8 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
     const document = buildNotebookVirtualDocument(notebook, { filePath: file })
-    fs.mkdirSync(materializedPath(file, dir))
-    const original = fs.promises.rm
-    const spy = spyOn(fs.promises, "rm").mockImplementation(((
+    const originalRm = fs.promises.rm
+    const rmSpy = spyOn(fs.promises, "rm").mockImplementation(((
       target: fs.PathLike,
       options?: unknown
     ) => {
@@ -635,12 +633,25 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
           Object.assign(new Error("busy"), { code: "EBUSY" })
         )
       }
-      return (original as unknown as (...args: unknown[]) => Promise<void>)(
+      return (originalRm as unknown as (...args: unknown[]) => Promise<void>)(
         target,
         options
       )
     }) as unknown as typeof fs.promises.rm)
-    restore.push(() => spy.mockRestore())
+    restore.push(() => rmSpy.mockRestore())
+    const originalRename = fs.promises.rename
+    const renameSpy = spyOn(fs.promises, "rename").mockImplementation(((
+      from: fs.PathLike,
+      to: fs.PathLike
+    ) => {
+      if (String(to).includes("opencode-ipynb-lsp-")) {
+        return Promise.reject(
+          Object.assign(new Error("rename refused"), { code: "EPERM" })
+        )
+      }
+      return originalRename(from, to)
+    }) as unknown as typeof fs.promises.rename)
+    restore.push(() => renameSpy.mockRestore())
     const sink = makeWarningSink()
     try {
       let message = ""
@@ -649,11 +660,13 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
       } catch (error) {
         message = error instanceof Error ? error.message : String(error)
       }
-      expect(message).toContain("Refusing to replace a directory")
+      expect(message).toContain("rename refused")
       const warnings = sink.drain()
       expect(warnings).toHaveLength(1)
       expect(warnings[0]?.source).toBe("temp-unlink")
       expect(warnings[0]?.detail).toContain(".tmp")
+      const leftovers = fs.readdirSync(dir).filter((entry) => entry.endsWith(".tmp"))
+      expect(leftovers).toHaveLength(1)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

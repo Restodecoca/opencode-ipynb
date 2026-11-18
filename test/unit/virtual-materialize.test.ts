@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -120,6 +120,77 @@ describe("virtual notebook materialization", () => {
     const document = buildNotebookVirtualDocument(notebook, { filePath: file })
     try {
       await expect(refreshMaterializedDocument(document, dir)).resolves.toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("does not rewrite a sidecar whose content is already current", async () => {    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-materialize-"))
+    const file = path.join(dir, "nav.ipynb")
+    const document = buildNotebookVirtualDocument(notebook, { filePath: file })
+    try {
+      const first = await materializeVirtualDocument(document, dir)
+      const inode = fs.statSync(first.path).ino
+      const original = fs.promises.rename
+      let renames = 0
+      const spy = spyOn(fs.promises, "rename").mockImplementation(((
+        from: fs.PathLike,
+        to: fs.PathLike
+      ) => {
+        renames += 1
+        return original(from, to)
+      }) as unknown as typeof fs.promises.rename)
+      try {
+        await materializeVirtualDocument(document, dir)
+        expect(renames).toBe(0)
+        expect(fs.statSync(first.path).ino).toBe(inode)
+        expect(fs.readFileSync(first.path, "utf8")).toBe(document.text)
+      } finally {
+        spy.mockRestore()
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("skips the rewrite when a refresh produces identical text", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-materialize-"))
+    const file = path.join(dir, "nav.ipynb")
+    const document = buildNotebookVirtualDocument(notebook, { filePath: file })
+    try {
+      const first = await materializeVirtualDocument(document, dir)
+      const inode = fs.statSync(first.path).ino
+      const original = fs.promises.rename
+      let renames = 0
+      const spy = spyOn(fs.promises, "rename").mockImplementation(((
+        from: fs.PathLike,
+        to: fs.PathLike
+      ) => {
+        renames += 1
+        return original(from, to)
+      }) as unknown as typeof fs.promises.rename)
+      try {
+        await expect(refreshMaterializedDocument(document, dir)).resolves.toBe(true)
+        expect(renames).toBe(0)
+        expect(fs.statSync(first.path).ino).toBe(inode)
+      } finally {
+        spy.mockRestore()
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses a directory at the sidecar path without creating a temp file", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-materialize-"))
+    const file = path.join(dir, "nav.ipynb")
+    const document = buildNotebookVirtualDocument(notebook, { filePath: file })
+    fs.mkdirSync(materializedPath(file, dir))
+    try {
+      await expect(materializeVirtualDocument(document, dir)).rejects.toThrow(
+        "Refusing to replace a directory"
+      )
+      expect(fs.readdirSync(dir).filter((entry) => entry.endsWith(".tmp"))).toEqual([])
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

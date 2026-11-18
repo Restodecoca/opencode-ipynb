@@ -91,6 +91,17 @@ export const materializedPath = (filePath: string, root?: string): string => {
 
 const activeSidecars = new Map<string, Set<string>>()
 
+const trackSidecar = (
+  rootReal: string,
+  safeTarget: string,
+  target: string
+): string => {
+  const tracked = activeSidecars.get(rootReal) ?? new Set<string>()
+  tracked.add(safeTarget)
+  activeSidecars.set(rootReal, tracked)
+  return target
+}
+
 const writeSidecar = async (
   worktree: string,
   filePath: string,
@@ -104,21 +115,32 @@ const writeSidecar = async (
     throw new Error(`Refusing to write outside the session directory: ${target}`)
   }
   const safeTarget = path.join(directoryReal, path.basename(target))
+  const existing = await fsp.lstat(safeTarget).catch((error: unknown) => {
+    if (!isMissing(error)) {
+      sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${safeTarget}`))
+    }
+    return undefined
+  })
+  if (existing?.isDirectory()) {
+    throw new Error(`Refusing to replace a directory: ${safeTarget}`)
+  }
+  if (existing?.isFile()) {
+    const current = await fsp.readFile(safeTarget, "utf8").catch((error: unknown) => {
+      if (!isMissing(error)) {
+        sink?.add(warningFrom("sidecar-cleanup", error, `reading ${safeTarget}`))
+      }
+      return undefined
+    })
+    if (current === text) {
+      return trackSidecar(rootReal, safeTarget, target)
+    }
+  }
   const temp = path.join(
     directoryReal,
     `${SIDECAR_PREFIX}${randomBytes(6).toString("hex")}.tmp`
   )
   try {
     await fsp.writeFile(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 })
-    const existing = await fsp.lstat(safeTarget).catch((error: unknown) => {
-      if (!isMissing(error)) {
-        sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${safeTarget}`))
-      }
-      return undefined
-    })
-    if (existing?.isDirectory()) {
-      throw new Error(`Refusing to replace a directory: ${safeTarget}`)
-    }
     await replaceFile(temp, safeTarget, sink)
   } catch (error) {
     await fsp.rm(temp, { force: true }).catch((cleanupError: unknown) => {
@@ -126,10 +148,7 @@ const writeSidecar = async (
     })
     throw error
   }
-  const tracked = activeSidecars.get(rootReal) ?? new Set<string>()
-  tracked.add(safeTarget)
-  activeSidecars.set(rootReal, tracked)
-  return target
+  return trackSidecar(rootReal, safeTarget, target)
 }
 
 const cleanupLegacyDirectory = async (
