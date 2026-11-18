@@ -81,6 +81,28 @@ describe("NotebookSchema validation", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("rejects a UTF-8 BOM as a parse error like nbformat, leaving the file untouched", async () => {
+    const fileSvc = makeNotebookFileService()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
+    const file = path.join(dir, "bom.ipynb")
+    const text = `\uFEFF${JSON.stringify({
+      cells: [],
+      metadata: {},
+      nbformat: 4,
+      nbformat_minor: 5
+    })}`
+    fs.writeFileSync(file, text)
+    try {
+      const result = await Effect.runPromise(
+        fileSvc.read(file).pipe(Effect.flip)
+      )
+      expect(result).toBeInstanceOf(NotebookParseError)
+      expect(fs.readFileSync(file, "utf8")).toBe(text)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("Source normalization", () => {
