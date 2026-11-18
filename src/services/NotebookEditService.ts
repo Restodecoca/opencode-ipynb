@@ -293,7 +293,8 @@ const makeEditImpl = (
             const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
-              previousText: snapshot.text
+              previousText: snapshot.text,
+trusted: true
             })
 
             return {
@@ -387,7 +388,8 @@ const makeEditImpl = (
             const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
-              previousText: snapshot.text
+              previousText: snapshot.text,
+trusted: true
             })
 
             const displayPath = pathSvc.toDisplay(abs)
@@ -472,7 +474,8 @@ const makeEditImpl = (
             const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
-              previousText: snapshot.text
+              previousText: snapshot.text,
+trusted: true
             })
 
             const displayPath = pathSvc.toDisplay(abs)
@@ -581,7 +584,8 @@ const makeEditImpl = (
             const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
-              previousText: snapshot.text
+              previousText: snapshot.text,
+trusted: true
             })
 
             return {

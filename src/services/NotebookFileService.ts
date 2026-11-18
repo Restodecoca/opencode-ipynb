@@ -148,6 +148,7 @@ export interface NotebookFileServiceShape {
       readonly noFollowFinal?: boolean
       readonly format?: NotebookFormat
       readonly previousText?: string
+      readonly trusted?: boolean
     }
   ) => Effect.Effect<
     WriteOutcome,
@@ -425,6 +426,7 @@ const buildFileService = (
       readonly noFollowFinal?: boolean
       readonly format?: NotebookFormat
       readonly previousText?: string
+      readonly trusted?: boolean
     }
   ): Effect.Effect<
     WriteOutcome,
@@ -474,7 +476,9 @@ const buildFileService = (
           issues: ["split the notebook or reduce large outputs"]
         })
       }
-      yield* validateNotebookShape(notebook, filePath)
+      if (options?.trusted !== true) {
+        yield* validateNotebookShape(notebook, filePath)
+      }
       if (
         options?.previousText === undefined &&
         previousText !== undefined &&

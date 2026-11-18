@@ -421,7 +421,8 @@ const makeOutputImpl = (
             const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
-              previousText: snapshot.text
+              previousText: snapshot.text,
+trusted: true
             })
             return {
               displayPath: pathSvc.toDisplay(abs),
@@ -498,7 +499,8 @@ const makeOutputImpl = (
             const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
-              previousText: snapshot.text
+              previousText: snapshot.text,
+trusted: true
             })
             return {
               displayPath: pathSvc.toDisplay(abs),

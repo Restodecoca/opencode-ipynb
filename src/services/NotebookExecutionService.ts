@@ -936,7 +936,8 @@ const makeExecutionImpl = (
                   const write = yield* fileSvc.writeAtomic(kernelPath, newNotebook, {
                     noFollowFinal: true,
                     format: snapshot.format,
-                    previousText: snapshot.text
+                    previousText: snapshot.text,
+trusted: true
                   })
                   wrote = true
                   writeMode = write.mode

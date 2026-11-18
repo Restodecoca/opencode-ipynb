@@ -269,7 +269,8 @@ const makeCleanImpl = (
             const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
-              previousText: snapshot.text
+              previousText: snapshot.text,
+trusted: true
             })
 
             return {

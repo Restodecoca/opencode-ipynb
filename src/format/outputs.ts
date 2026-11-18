@@ -41,8 +41,11 @@ const imageNotice = (mime: string, value: string): string => {
   return `${sanitizeInline(mime)}, ${humanBytes(bytes)}, omitted by default`
 }
 
+const boundedForSanitize = (text: string, max: number): string =>
+  text.length <= max * 2 + 256 ? text : text.slice(0, max * 2 + 256)
+
 const formatStream = (text: string, max: number): string => {
-  const t = truncate(sanitizeTerminal(text), max, {
+  const t = truncate(sanitizeTerminal(boundedForSanitize(text, max)), max, {
     key: "stream",
     paramName: "maxOutputChars"
   })
@@ -82,10 +85,14 @@ const formatDisplay = (
         lines.push(`- ${sanitizeInline(mime)}: (unsupported value type)`)
       }
     } else if (typeof value === "string") {
-      const t = truncate(sanitizeTerminal(value), opts.maxOutputChars, {
-        key: "output",
-        paramName: "maxOutputChars"
-      })
+      const t = truncate(
+        sanitizeTerminal(boundedForSanitize(value, opts.maxOutputChars)),
+        opts.maxOutputChars,
+        {
+          key: "output",
+          paramName: "maxOutputChars"
+        }
+      )
       lines.push(`- ${sanitizeInline(mime)}:`)
       const fence = codeFence(t.text)
       lines.push(fence)
@@ -134,10 +141,14 @@ const formatDisplayWithAttachments = async (
         lines.push(`- ${sanitizeInline(mime)}: (unsupported value type)`)
       }
     } else if (typeof value === "string") {
-      const t = truncate(sanitizeTerminal(value), opts.maxOutputChars, {
-        key: "output",
-        paramName: "maxOutputChars"
-      })
+      const t = truncate(
+        sanitizeTerminal(boundedForSanitize(value, opts.maxOutputChars)),
+        opts.maxOutputChars,
+        {
+          key: "output",
+          paramName: "maxOutputChars"
+        }
+      )
       lines.push(`- ${sanitizeInline(mime)}:`)
       const fence = codeFence(t.text)
       lines.push(fence)

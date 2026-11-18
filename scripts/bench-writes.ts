@@ -219,6 +219,26 @@ const META_LARGE = Number(process.env.IPYNB_BENCH_META_LARGE ?? "32000")
 const INTERLEAVED_SMALL = Number(process.env.IPYNB_BENCH_INTERLEAVED_SMALL ?? "1000")
 const INTERLEAVED_LARGE = Number(process.env.IPYNB_BENCH_INTERLEAVED_LARGE ?? "64000")
 
+const measureLargeOutput = (): { ms: number; rssDeltaMb: number } => {
+  const { formatOutputs } = require("../src/format/outputs.js") as {
+    formatOutputs: (
+      outputs: ReadonlyArray<Record<string, unknown>>,
+      options: { maxOutputChars: number }
+    ) => string
+  }
+  const text = "x".repeat(40 * 1024 * 1024)
+  const before = process.memoryUsage().rss
+  const started = Bun.nanoseconds()
+  formatOutputs(
+    [{ output_type: "stream", name: "stdout", text }],
+    { maxOutputChars: 6_000 }
+  )
+  return {
+    ms: (Bun.nanoseconds() - started) / 1e6,
+    rssDeltaMb: (process.memoryUsage().rss - before) / 1e6
+  }
+}
+
 const main = async (): Promise<void> => {
   await measure(SMALL)
   const small = await measure(SMALL)
@@ -257,7 +277,13 @@ const main = async (): Promise<void> => {
   console.log(
     `interleaved metadata patch ${INTERLEAVED_SMALL}->${INTERLEAVED_LARGE} keys: ${interleavedSmall.toFixed(1)}ms -> ${interleavedLarge.toFixed(1)}ms (${interleavedRatio.toFixed(2)}x of linear)`
   )
+  const largeOutput = measureLargeOutput()
+  console.log(
+    `large per-cell output 40MB with maxOutputChars=6000: ${largeOutput.ms.toFixed(1)}ms, rss +${largeOutput.rssDeltaMb.toFixed(0)}MB`
+  )
   const failures: string[] = []
+  if (largeOutput.ms > 200) failures.push(`largeOutputTime ${largeOutput.ms.toFixed(1)}ms`)
+  if (largeOutput.rssDeltaMb > 100) failures.push(`largeOutputRss ${largeOutput.rssDeltaMb.toFixed(0)}MB`)
   if (normalized.clearAll > BUDGET) failures.push(`clearAll ${normalized.clearAll.toFixed(2)}x`)
   if (normalized.move > BUDGET) failures.push(`move ${normalized.move.toFixed(2)}x`)
   if (normalized.edit > BUDGET) failures.push(`edit ${normalized.edit.toFixed(2)}x`)
