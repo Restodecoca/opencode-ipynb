@@ -181,6 +181,61 @@ describe("virtual notebook materialization", () => {
     }
   })
 
+  it("keeps a sidecar materialized during cleanup tracked for the next sweep", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-materialize-race-"))
+    const fileB = path.join(dir, "b.ipynb")
+    const fileC = path.join(dir, "c.ipynb")
+    const original = fs.promises.rm
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let entered: () => void = () => {}
+    const rmEntered = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const spy = spyOn(fs.promises, "rm").mockImplementation(((
+      target: fs.PathLike,
+      options?: unknown
+    ) => {
+      if (String(target).includes("opencode-ipynb-lsp-")) {
+        entered()
+        return gate.then(() =>
+          (original as unknown as (...args: unknown[]) => Promise<void>)(
+            target,
+            options
+          )
+        )
+      }
+      return (original as unknown as (...args: unknown[]) => Promise<void>)(
+        target,
+        options
+      )
+    }) as unknown as typeof fs.promises.rm)
+    try {
+      const b = await materializeVirtualDocument(
+        buildNotebookVirtualDocument(notebook, { filePath: fileB }),
+        dir
+      )
+      const cleanup = cleanupVirtualDocuments(dir)
+      await rmEntered
+      const c = await materializeVirtualDocument(
+        buildNotebookVirtualDocument(notebook, { filePath: fileC }),
+        dir
+      )
+      release()
+      await cleanup
+      spy.mockRestore()
+      expect(fs.existsSync(b.path)).toBe(false)
+      expect(fs.existsSync(c.path)).toBe(true)
+      await cleanupVirtualDocuments(dir)
+      expect(fs.existsSync(c.path)).toBe(false)
+    } finally {
+      spy.mockRestore()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("refuses a directory at the sidecar path without creating a temp file", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-materialize-"))
     const file = path.join(dir, "nav.ipynb")

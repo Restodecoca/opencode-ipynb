@@ -334,9 +334,10 @@ export const cleanupVirtualDocuments = async (
   if (rootReal === undefined) return
   const tracked = activeSidecars.get(rootReal)
   if (tracked !== undefined) {
+    const snapshot = [...tracked]
     const failed = new Set<string>()
     await Promise.all(
-      [...tracked].map(async (file) => {
+      snapshot.map(async (file) => {
         const parentReal = await fsp
           .realpath(path.dirname(file))
           .catch((error: unknown) => {
@@ -367,7 +368,7 @@ export const cleanupVirtualDocuments = async (
       })
     )
     const latest = activeSidecars.get(rootReal) ?? tracked
-    for (const file of tracked) {
+    for (const file of snapshot) {
       if (!failed.has(file)) latest.delete(file)
     }
     if (latest.size === 0) activeSidecars.delete(rootReal)
