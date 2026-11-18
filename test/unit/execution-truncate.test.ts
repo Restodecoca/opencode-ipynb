@@ -274,3 +274,20 @@ describe("truncateRunResponse", () => {
   })
 
 })
+
+describe("truncateRunResponse per-cell budget", () => {
+  it("keeps a truncated output for every cell instead of starving the tail", () => {
+    const outputs = Array.from({ length: 40 }, (_, index) =>
+      makeSummary({ cellIndex: index, stdout: `cell-${index}:` + "x".repeat(4_000) })
+    )
+    const out = truncateRunResponse(makeResponse({ outputs }), 6_000)
+    expect(out.outputs).toHaveLength(40)
+    for (const [index, cell] of out.outputs.entries()) {
+      const stdout = cell.stdout ?? ""
+      expect(stdout.length).toBeGreaterThan(0)
+      expect(stdout).toContain(`cell-${index}:`)
+      expect(stdout).toContain("truncated")
+    }
+    expect(out.outputs[39]?.stdout).not.toBe("")
+  })
+})

@@ -123,3 +123,34 @@ describe("buildPersistedOutputs", () => {
     })
   })
 })
+
+describe("buildPersistedOutputs keeps raw MIME bundles", () => {
+  it("persists multi-mime display_data exactly as the kernel produced it", () => {
+    const raw = [
+      {
+        output_type: "display_data",
+        data: {
+          "text/html": "<b>hi</b>",
+          "text/plain": "hi",
+          "image/png": "iVBORw0KGgo="
+        },
+        metadata: { needs_background: "light" }
+      },
+      {
+        output_type: "execute_result",
+        execution_count: 7,
+        data: { "text/plain": "42", "text/markdown": "**42**" },
+        metadata: {}
+      }
+    ]
+    const out = buildPersistedOutputs(makeSummary({ rawOutputs: raw }))
+    expect(out).toEqual(raw)
+  })
+
+  it("falls back to the summary shape when raw outputs are absent", () => {
+    const out = buildPersistedOutputs(
+      makeSummary({ stdout: "text", displayData: [{ mime: "image/png", sizeBytes: 9 }] })
+    )
+    expect(out[0]).toEqual({ output_type: "stream", name: "stdout", text: "text" })
+  })
+})

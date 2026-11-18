@@ -374,20 +374,29 @@ const truncateRunResponse = (
   response: RunResponse,
   maxOutputChars: number
 ): RunResponse => {
-  let remaining = Math.min(
+  const summaries = response.outputs.slice(0, 1_000)
+  const perSummaryReserve = 200
+  const totalBudget = Math.min(
     MAX_RUN_RESPONSE_CHARS,
-    Math.max(0, maxOutputChars) * Math.max(1, response.outputs.length)
+    Math.max(0, maxOutputChars) * Math.max(1, summaries.length)
   )
-  const outputs = response.outputs.slice(0, 1_000).map((o) => {
-    const budget = Math.min(maxOutputChars, remaining)
-    const truncated = truncateCellSummary(o, budget)
-    remaining = Math.max(
-      0,
-      remaining - cellSummaryChars(truncated) - 200
+  const available = Math.max(
+    summaries.length,
+    totalBudget - perSummaryReserve * summaries.length
+  )
+  const fairShare = Math.max(1, Math.floor(available / Math.max(1, summaries.length)))
+  let remaining = available
+  const outputs = summaries.map((summary, index) => {
+    const cellsLeft = Math.max(1, summaries.length - index)
+    const share = Math.max(1, Math.floor(remaining / cellsLeft))
+    const truncated = truncateCellSummary(
+      summary,
+      Math.max(1, Math.min(fairShare, share))
     )
+    remaining = Math.max(0, remaining - cellSummaryChars(truncated))
     return truncated
   })
-  let errorBudget = Math.min(maxOutputChars, remaining)
+  let errorBudget = Math.min(maxOutputChars, Math.max(0, remaining))
   let error: RunResponse["error"] | undefined
   if (response.error !== undefined) {
     const ename = truncateText(response.error.ename, errorBudget) ?? "Error"
@@ -526,6 +535,15 @@ export const notebookUsesLineArrays = (notebook: NotebookRaw): boolean =>
 export const buildPersistedOutputs = (
   summary: CellExecutionSummary
 ): Array<Record<string, unknown>> => {
+  if (summary.rawOutputs !== undefined && summary.rawOutputs.length > 0) {
+    const raw = summary.rawOutputs.filter(
+      (output) =>
+        output !== null &&
+        typeof output === "object" &&
+        typeof (output as { output_type?: unknown }).output_type === "string"
+    )
+    if (raw.length > 0) return raw.map((output) => ({ ...output }))
+  }
   const outputs: Array<Record<string, unknown>> = []
   if (summary.stdout !== undefined) {
     outputs.push({
