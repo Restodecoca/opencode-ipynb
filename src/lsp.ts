@@ -192,14 +192,68 @@ export const buildNotebookVirtualDocument = (
   }
 }
 
+const cellCoveringLine = (
+  cells: ReadonlyArray<NotebookCellDocument>,
+  line: number
+): NotebookCellDocument | undefined => {
+  let low = 0
+  let high = cells.length - 1
+  let candidate: NotebookCellDocument | undefined
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    const cell = cells[mid]!
+    if (cell.startLine <= line) {
+      candidate = cell
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+  return candidate !== undefined && line < candidate.endLine ? candidate : undefined
+}
+
+const cellPositionOfIndex = (
+  cells: ReadonlyArray<NotebookCellDocument>,
+  cellIndex: number
+): number => {
+  let low = 0
+  let high = cells.length - 1
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    const cell = cells[mid]!
+    if (cell.cellIndex === cellIndex) return mid
+    if (cell.cellIndex < cellIndex) {
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+  return -1
+}
+
+export const cellsAroundIndex = (
+  document: NotebookVirtualDocument,
+  cellIndex: number
+):
+  | {
+      readonly current: NotebookCellDocument
+      readonly previous: NotebookCellDocument | undefined
+    }
+  | undefined => {
+  const position = cellPositionOfIndex(document.cells, cellIndex)
+  if (position < 0) return undefined
+  return {
+    current: document.cells[position]!,
+    previous: position > 0 ? document.cells[position - 1] : undefined
+  }
+}
+
 export const toCellPosition = (
   document: NotebookVirtualDocument,
   line: number,
   character: number
 ): CellPosition | undefined => {
-  const cell = document.cells.find(
-    (candidate) => line >= candidate.startLine && line < candidate.endLine
-  )
+  const cell = cellCoveringLine(document.cells, line)
   if (!cell) return undefined
   return {
     cellIndex: cell.cellIndex,
@@ -214,7 +268,8 @@ export const toVirtualPosition = (
   line: number,
   character: number
 ): VirtualPosition | undefined => {
-  const cell = document.cells.find((candidate) => candidate.cellIndex === cellIndex)
+  const position = cellPositionOfIndex(document.cells, cellIndex)
+  const cell = position >= 0 ? document.cells[position] : undefined
   if (!cell || line < 0 || line >= cell.lineCount) return undefined
   return { line: cell.startLine + line, character }
 }

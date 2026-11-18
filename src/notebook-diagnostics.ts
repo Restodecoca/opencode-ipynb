@@ -9,6 +9,7 @@ import * as fs from "node:fs"
 import { promises as fsp } from "node:fs"
 import * as path from "node:path"
 import {
+  cellsAroundIndex,
   toCellPosition,
   type NotebookVirtualDocument
 } from "./lsp.js"
@@ -517,12 +518,12 @@ const remapCellBoundary = (
   ) {
     return position
   }
-  const current = document.cells.find((cell) => cell.cellIndex === position.cellIndex)
-  if (current === undefined) return position
-  const previous = document.cells.find(
-    (cell) => cell.cellIndex < position.cellIndex && cell.endLine === current.startLine
-  )
-  if (previous === undefined) return position
+  const around = cellsAroundIndex(document, position.cellIndex)
+  if (around === undefined) return position
+  const previous = around.previous
+  if (previous === undefined || previous.endLine !== around.current.startLine) {
+    return position
+  }
   if (endsWithOpenConstruct(previous.text)) {
     const last = lastSignificantLine(previous.text)
     return {
