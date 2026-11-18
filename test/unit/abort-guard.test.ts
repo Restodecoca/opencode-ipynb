@@ -5,6 +5,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { toV2Tool } from "../../src/plugin-v2.js"
 import { v2ToolRegistrations } from "../../src/registrations.js"
+import { ipynbEditTool } from "../../src/tools/edit.js"
+import type { ToolContext } from "../../src/tool.js"
 
 const notebook = `${JSON.stringify(
   {
@@ -54,6 +56,39 @@ describe("an already-cancelled tool call", () => {
       )) as { content: string; metadata?: { error?: boolean; message?: string } }
       expect(result.content).toContain("cancelled")
       expect(result.metadata?.error).toBe(true)
+      expect(fs.readFileSync(file).equals(before)).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("also refuses a raw tool definition invoked directly", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-abort-raw-"))
+    const file = path.join(dir, "n.ipynb")
+    fs.writeFileSync(file, notebook)
+    const before = fs.readFileSync(file)
+    const controller = new AbortController()
+    controller.abort()
+    try {
+      const result = await ipynbEditTool.execute(
+        {
+          filePath: file,
+          cellIndex: 0,
+          source: "# RAW",
+          clearOutputs: "never"
+        },
+        {
+          sessionID: "t",
+          messageID: "t",
+          agent: "t",
+          directory: dir,
+          worktree: dir,
+          abort: controller.signal,
+          metadata: () => {},
+          ask: async () => {}
+        } as unknown as ToolContext
+      )
+      expect(typeof result !== "string" && result.metadata?.error).toBe(true)
       expect(fs.readFileSync(file).equals(before)).toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })

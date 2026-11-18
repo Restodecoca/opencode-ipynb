@@ -55,7 +55,20 @@ export type AnyToolDefinition = ToolDefinition<z.ZodRawShape>
 
 export const tool = <Args extends z.ZodRawShape>(
   definition: ToolDefinition<Args>
-): ToolDefinition<Args> => definition
+): ToolDefinition<Args> => ({
+  ...definition,
+  async execute(input, context) {
+    if (context.abort?.aborted) {
+      const message = "the request was cancelled; nothing was changed"
+      return {
+        title: "cancelled",
+        output: `Error: ${message}`,
+        metadata: { error: true, message }
+      }
+    }
+    return definition.execute(input, context)
+  }
+})
 
 export const runToolEffect = async <A, E>(
   effect: Effect.Effect<A, E>
