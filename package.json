@@ -52,7 +52,7 @@
     "test": "bun test",
     "lint:effect": "tsc --noEmit",
     "prepare:effect-lsp": "effect-language-service patch",
-    "prepack": "node -e \"for (const f of ['dist/index.js','dist/index.d.ts','dist/lsp.js','dist/lsp.d.ts','dist/rpc.js','dist/rpc.d.ts']) if (!require('node:fs').existsSync(f)) { console.error(f + ' is missing; run: bun run build'); process.exit(1) }\"",
+    "prepack": "bun run scripts/prepack-check.ts",
     "test:coverage": "bun test --coverage"
   },
   "keywords": [

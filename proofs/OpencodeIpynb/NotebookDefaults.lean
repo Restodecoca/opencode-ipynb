@@ -263,4 +263,21 @@ theorem applyDefaults_idempotent (entries : List Entry) (defaults : List Entry) 
   exact hasEntryKey_applyDefaults_of_hasKey entries defaults d.1
     (hasEntryKey_of_mem defaults d hd)
 
+theorem applyDefaults_keys_stable (entries : List Entry) (defaults : List Entry) :
+    (applyDefaults (applyDefaults entries defaults) defaults).map Prod.fst =
+      (applyDefaults entries defaults).map Prod.fst := by
+  rw [applyDefaults_idempotent]
+
+theorem applyDefaults_values_stable (entries : List Entry) (defaults : List Entry)
+    (k : String) :
+    lookupEntry (applyDefaults (applyDefaults entries defaults) defaults) k =
+      lookupEntry (applyDefaults entries defaults) k := by
+  rw [applyDefaults_idempotent]
+
+theorem applyDefaults_singleton_defaults_idempotent (entries : List Entry)
+    (key : String) (value : Nat) :
+    (applyDefaults (applyDefaults entries [(key, value)]) [(key, value)]).map Prod.fst =
+      (applyDefaults entries [(key, value)]).map Prod.fst :=
+  applyDefaults_keys_stable entries [(key, value)]
+
 end OpencodeIpynb

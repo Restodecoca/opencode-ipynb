@@ -136,12 +136,12 @@ const plugin: Plugin.Plugin = {
             context.location.project.directory
           ])
           await context.permission.assert({
-            sessionID: event.sessionID as never,
-            agent: event.agent as never,
+            sessionID: event.sessionID,
+            agent: event.agent,
             source: {
               type: "tool",
-              messageID: event.messageID as never,
-              id: event.id as never
+              messageID: event.messageID,
+              id: event.id
             },
             action: "edit",
             resources: [...sidecarPaths],
@@ -198,12 +198,12 @@ const plugin: Plugin.Plugin = {
         ])
         try {
           await context.permission.assert({
-            sessionID: event.sessionID as never,
-            agent: event.agent as never,
+            sessionID: event.sessionID,
+            agent: event.agent,
             source: {
               type: "tool",
-              messageID: event.messageID as never,
-              id: event.id as never
+              messageID: event.messageID,
+              id: event.id
             },
             action: "lsp",
             resources: [...lspPaths],
@@ -226,12 +226,12 @@ const plugin: Plugin.Plugin = {
         ) {
           try {
             await context.permission.assert({
-              sessionID: event.sessionID as never,
-              agent: event.agent as never,
+              sessionID: event.sessionID,
+              agent: event.agent,
               source: {
                 type: "tool",
-                messageID: event.messageID as never,
-                id: event.id as never
+                messageID: event.messageID,
+                id: event.id
               },
               action: "lsp",
               resources: [pyrightBinary],
@@ -256,12 +256,12 @@ const plugin: Plugin.Plugin = {
         }
         try {
           await context.permission.assert({
-            sessionID: event.sessionID as never,
-            agent: event.agent as never,
+            sessionID: event.sessionID,
+            agent: event.agent,
             source: {
               type: "tool",
-              messageID: event.messageID as never,
-              id: event.id as never
+              messageID: event.messageID,
+              id: event.id
             },
             action: "edit",
             resources: [...tempPaths],
@@ -278,12 +278,12 @@ const plugin: Plugin.Plugin = {
           requestFallbackPermission: async () => {
             try {
               await context.permission.assert({
-                sessionID: event.sessionID as never,
-                agent: event.agent as never,
+                sessionID: event.sessionID,
+                agent: event.agent,
                 source: {
                   type: "tool",
-                  messageID: event.messageID as never,
-                  id: event.id as never
+                  messageID: event.messageID,
+                  id: event.id
                 },
                 action: "edit",
                 resources: [...fallbackPaths],
