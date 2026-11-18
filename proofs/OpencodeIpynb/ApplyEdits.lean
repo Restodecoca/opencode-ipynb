@@ -39,12 +39,15 @@ theorem applyEdits_single (text : List Char) (edit : Edit) :
   simp
 
 theorem applyEdits_overlap_rejected (text : List Char) (e1 e2 : Edit)
-    (h : e2.start < e1.stop) : applyEdits text [e1, e2] = none := by
+    (_hsorted : e1.start ≤ e2.start) (hoverlap : e2.start < e1.stop) :
+    applyEdits text [e1, e2] = none := by
   simp only [applyEdits, applyEditsFrom]
   rw [ite_eq_right (by omega : ¬ (e1.start < 0))]
-  rw [ite_eq_left h]
+  rw [ite_eq_left hoverlap]
 
-theorem applyEdits_two (text : List Char) (e1 e2 : Edit) (h : e1.stop ≤ e2.start) :
+theorem applyEdits_two (text : List Char) (e1 e2 : Edit)
+    (_hvalid1 : e1.start ≤ e1.stop) (_hvalid2 : e2.start ≤ e2.stop)
+    (h : e1.stop ≤ e2.start) :
     applyEdits text [e1, e2] =
       some (text.take e1.start ++ e1.text ++
         ((text.drop e1.stop).take (e2.start - e1.stop) ++ e2.text ++ text.drop e2.stop)) := by
@@ -74,6 +77,7 @@ theorem applyEditsFrom_eq_spliceAll (text : List Char) (cursor : Nat) :
       simp [spliceAll]
 
 theorem applyEdits_chained_total (text : List Char) (edits : List Edit)
+    (_hvalid : ∀ e ∈ edits, e.start ≤ e.stop)
     (h : chainedFrom 0 edits = true) :
     applyEdits text edits = some (spliceAll text 0 edits) :=
   applyEditsFrom_eq_spliceAll text 0 edits h
