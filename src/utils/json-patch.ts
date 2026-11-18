@@ -203,8 +203,10 @@ const indentAt = (text: string, pos: number): string => {
   return /^[ \t]*$/.test(prefix) ? prefix : ""
 }
 
-const isMultiline = (text: string, node: JsonNode): boolean =>
-  text.slice(node.start, node.end).includes("\n")
+const isMultiline = (text: string, node: JsonNode): boolean => {
+  const at = text.indexOf("\n", node.start)
+  return at !== -1 && at < node.end
+}
 
 interface Layout {
   readonly text: string
