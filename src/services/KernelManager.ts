@@ -63,6 +63,7 @@ interface KernelState {
   pid: number
   kernelPid: number | undefined
   nextId: number
+  inflight: number
   pending: Map<number, PendingRequest>
   readyPromise: Promise<void>
   resolveReady: () => void
@@ -231,6 +232,11 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     }
   }
 
+  const stopKernelIfIdle = (filePath: string, state: KernelState): void => {
+    if (state.pending.size > 0 || state.inflight > 0) return
+    stopKernelInBackground(filePath)
+  }
+
   const stopKernelInBackground = (filePath: string): void => {
     void killKernel(filePath).catch((error: unknown) => {
       currentSink()?.add(warningFrom("cleanup", error, `stopping the warm kernel for ${filePath}`))
@@ -314,6 +320,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       pid: proc.pid ?? -1,
       kernelPid: undefined,
       nextId: 1,
+      inflight: 0,
       pending: new Map(),
       readyPromise: readyDeferred.promise,
       resolveReady: readyDeferred.resolve,
@@ -752,6 +759,13 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       })
       const requestSink = options?.warningSink
       const timeoutMs = request.timeoutMs ?? opts.defaultTimeoutMs
+      state.inflight += 1
+      let readyInflight = true
+      const releaseReady = (): void => {
+        if (!readyInflight) return
+        readyInflight = false
+        state.inflight = Math.max(0, state.inflight - 1)
+      }
       yield* Effect.tryPromise({
         try: () =>
           withTimeout(
@@ -759,7 +773,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
             timeoutMs,
             "warm kernel did not become ready before the timeout",
             options?.signal,
-            () => stopKernelInBackground(kernelPath)
+            () => stopKernelIfIdle(kernelPath, state)
           ),
         catch: (err) =>
           err instanceof PythonRunnerError
@@ -768,7 +782,11 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
                 message: "warm kernel failed to become ready",
                 detail: err instanceof Error ? err.message : String(err)
               })
-      })
+      }).pipe(Effect.ensuring(Effect.sync(releaseReady)))
+      state.inflight += 1
+      const releaseInflight = (): void => {
+        state.inflight = Math.max(0, state.inflight - 1)
+      }
       const id = state.nextId++
       const raw = yield* Effect.tryPromise<RunResponse, PythonRunnerError>({
         try: () =>
@@ -777,7 +795,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               const handler = state.pending.get(id)
               handler?.cleanup?.()
               state.pending.delete(id)
-              stopKernelInBackground(kernelPath)
+              stopKernelIfIdle(kernelPath, state)
               reject(
                 new PythonRunnerError({
                   message: `warm kernel request timed out after ${timeoutMs}ms`,
@@ -791,17 +809,20 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               resolve: (r) => {
                 cleanupStdinError?.()
                 cleanupAbort?.()
+                releaseInflight()
                 resolve(r)
               },
               reject: (e) => {
                 cleanupStdinError?.()
                 cleanupAbort?.()
+                releaseInflight()
                 reject(e)
               },
               timer,
               cleanup: () => {
                 cleanupStdinError?.()
                 cleanupAbort?.()
+                releaseInflight()
               },
               ...(requestSink === undefined ? {} : { sink: requestSink })
             })
@@ -810,7 +831,8 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               state.pending.delete(id)
               cleanupAbort?.()
               cleanupStdinError?.()
-              stopKernelInBackground(kernelPath)
+              releaseInflight()
+              stopKernelIfIdle(kernelPath, state)
               reject(
                 new PythonRunnerError({
                   message: "warm kernel request aborted",
