@@ -3,6 +3,7 @@ import { promises as fsp } from "node:fs"
 import { Effect } from "effect"
 import {
   NotebookNotFoundError,
+  NotebookParseError,
   NotebookValidationError,
   PathOutsideWorktreeError
 } from "../domain/errors.js"
@@ -10,6 +11,7 @@ import type { NotebookFileServiceShape } from "./NotebookFileService.js"
 
 type RevisionError =
   | NotebookNotFoundError
+  | NotebookParseError
   | NotebookValidationError
   | PathOutsideWorktreeError
 

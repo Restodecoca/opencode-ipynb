@@ -29,6 +29,10 @@
 - An invalid `OPENCODE_IPYNB_OPTIONS` value is no longer silently ignored:
   `ipynb_doctor` reports the offending option and states that instance or
   default options are in effect.
+- A notebook whose bytes are not valid UTF-8 is rejected at read time instead
+  of being decoded with replacement characters and silently rewritten later,
+  matching `nbformat`'s `UnicodeDecodeError`. The same applies to a UTF-8 BOM
+  prefix, which `nbformat` already rejects as not JSON.
 - On Windows, a pyright `.cmd`/`.bat` shim whose command line contains shell
   metacharacters (`%`, `&`, `|`, `<`, `>`, `^`, quotes, CR/LF) is refused with
   an `unsafe-shell-command` diagnostics skip; the command is never handed to

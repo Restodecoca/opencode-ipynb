@@ -87,6 +87,21 @@ const inside = (root: string, target: string): boolean => {
   )
 }
 
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
+const decodeNotebookBytes = (
+  bytes: Uint8Array,
+  filePath: string
+): Effect.Effect<string, NotebookParseError> =>
+  Effect.try({
+    try: () => utf8Decoder.decode(bytes),
+    catch: () =>
+      new NotebookParseError({
+        message: "the notebook is not valid UTF-8",
+        filePath
+      })
+  })
+
 export interface NotebookFileServiceShape {
   readonly read: (
     filePath: string
@@ -101,7 +116,10 @@ export interface NotebookFileServiceShape {
     filePath: string
   ) => Effect.Effect<
     string,
-    NotebookNotFoundError | NotebookValidationError | PathOutsideWorktreeError
+    | NotebookNotFoundError
+    | NotebookParseError
+    | NotebookValidationError
+    | PathOutsideWorktreeError
   >
   readonly readWithText: (
     filePath: string
@@ -126,7 +144,10 @@ export interface NotebookFileServiceShape {
     }
   ) => Effect.Effect<
     WriteOutcome,
-    NotebookValidationError | NotebookWriteError | PathOutsideWorktreeError
+    | NotebookParseError
+    | NotebookValidationError
+    | NotebookWriteError
+    | PathOutsideWorktreeError
   >
   readonly withFileLock: <A, E, R>(
     filePath: string,
@@ -172,7 +193,10 @@ const buildFileService = (
     filePath: string
   ): Effect.Effect<
     string,
-    NotebookNotFoundError | NotebookValidationError | PathOutsideWorktreeError
+    | NotebookNotFoundError
+    | NotebookParseError
+    | NotebookValidationError
+    | PathOutsideWorktreeError
   > =>
     Effect.tryPromise({
       try: async () => {
@@ -232,7 +256,15 @@ const buildFileService = (
                 issues: [`size=${opened.size}`]
               })
             }
-            return await handle.readFile({ encoding: "utf8" })
+            const bytes = await handle.readFile()
+            try {
+              return utf8Decoder.decode(bytes)
+            } catch {
+              throw new NotebookParseError({
+                message: "the notebook is not valid UTF-8",
+                filePath
+              })
+            }
           } finally {
             await handle.close().catch(() => {})
           }
@@ -252,18 +284,20 @@ const buildFileService = (
           ? err
           : err instanceof NotebookNotFoundError
             ? err
-            : err instanceof NotebookValidationError
+            : err instanceof NotebookParseError
               ? err
-              : new NotebookValidationError({
-                message: `cannot read notebook: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-                filePath,
-                issues: [
-                  (err as NodeJS.ErrnoException).code ??
-                    "read failed"
-                ]
-              })
+              : err instanceof NotebookValidationError
+                ? err
+                : new NotebookValidationError({
+                  message: `cannot read notebook: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                  filePath,
+                  issues: [
+                    (err as NodeJS.ErrnoException).code ??
+                      "read failed"
+                  ]
+                })
     })
 
   const validateNotebookShape = (
@@ -316,15 +350,19 @@ const buildFileService = (
 
   const readExistingText = (
     filePath: string
-  ): Effect.Effect<string | undefined, never> =>
-    Effect.tryPromise({
-      try: async () => {
-        const stat = await fsp.stat(filePath)
-        if (!stat.isFile() || stat.size > MAX_NOTEBOOK_BYTES) return undefined
-        return await fsp.readFile(filePath, { encoding: "utf8" })
-      },
-      catch: () => undefined
-    }).pipe(Effect.orElseSucceed(() => undefined))
+  ): Effect.Effect<string | undefined, NotebookParseError> =>
+    Effect.gen(function* () {
+      const bytes = yield* Effect.tryPromise({
+        try: async () => {
+          const stat = await fsp.stat(filePath)
+          if (!stat.isFile() || stat.size > MAX_NOTEBOOK_BYTES) return undefined
+          return await fsp.readFile(filePath)
+        },
+        catch: () => undefined
+      }).pipe(Effect.orElseSucceed(() => undefined))
+      if (bytes === undefined) return undefined
+      return yield* decodeNotebookBytes(bytes, filePath)
+    })
 
   const writeAtomic = (
     filePath: string,
@@ -336,7 +374,10 @@ const buildFileService = (
     }
   ): Effect.Effect<
     WriteOutcome,
-    NotebookValidationError | NotebookWriteError | PathOutsideWorktreeError
+    | NotebookParseError
+    | NotebookValidationError
+    | NotebookWriteError
+    | PathOutsideWorktreeError
   > =>
     Effect.gen(function* () {
       const stored =

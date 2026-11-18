@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -99,6 +99,55 @@ describe("NotebookSchema validation", () => {
       )
       expect(result).toBeInstanceOf(NotebookParseError)
       expect(fs.readFileSync(file, "utf8")).toBe(text)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects bytes that are not valid UTF-8 instead of replacing them", async () => {
+    const fileSvc = makeNotebookFileService()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
+    const file = path.join(dir, "latin1.ipynb")
+    const bytes = Buffer.from(
+      '{"cells":[],"metadata":{"name":"caf\xe9"},"nbformat":4,"nbformat_minor":5}',
+      "latin1"
+    )
+    fs.writeFileSync(file, bytes)
+    try {
+      const result = await Effect.runPromise(
+        fileSvc.read(file).pipe(Effect.flip)
+      )
+      expect(result).toBeInstanceOf(NotebookParseError)
+      expect(fs.readFileSync(file).equals(bytes)).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses to rewrite bytes that are not valid UTF-8", async () => {
+    const fileSvc = makeNotebookFileService()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
+    const file = path.join(dir, "latin1.ipynb")
+    const bytes = Buffer.from(
+      '{"cells":[],"metadata":{"name":"caf\xe9"},"nbformat":4,"nbformat_minor":5}',
+      "latin1"
+    )
+    fs.writeFileSync(file, bytes)
+    try {
+      const exit = await Effect.runPromiseExit(
+        fileSvc.writeAtomic(file, {
+          cells: [],
+          metadata: {},
+          nbformat: 4,
+          nbformat_minor: 5
+        } as never)
+      )
+      expect(exit._tag).toBe("Failure")
+      const error = exit._tag === "Failure" ? Cause.findErrorOption(exit.cause) : undefined
+      expect(error?._tag === "Some" ? error.value : undefined).toBeInstanceOf(
+        NotebookParseError
+      )
+      expect(fs.readFileSync(file).equals(bytes)).toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
