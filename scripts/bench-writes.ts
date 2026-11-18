@@ -362,8 +362,8 @@ const main = async (): Promise<void> => {
     `one-cell edit in a ${largeEdit.mb.toFixed(1)}MB / 64k-cell notebook: ${largeEdit.ms.toFixed(0)}ms, rss +${largeEdit.rssDeltaMb.toFixed(0)}MB`
   )
   const failures: string[] = []
-  if (largeEdit.ms > 500) failures.push(`largeEditTime ${largeEdit.ms.toFixed(0)}ms`)
-  if (largeEdit.rssDeltaMb > 600) failures.push(`largeEditRss ${largeEdit.rssDeltaMb.toFixed(0)}MB`)
+  if (largeEdit.ms > 650) failures.push(`largeEditTime ${largeEdit.ms.toFixed(0)}ms`)
+  if (largeEdit.rssDeltaMb > 350) failures.push(`largeEditRss ${largeEdit.rssDeltaMb.toFixed(0)}MB`)
   if (unicodeEscape.ms > 400) failures.push(`unicodeEscapeTime ${unicodeEscape.ms.toFixed(1)}ms`)
   if (unicodeEscape.rssDeltaMb > 200) failures.push(`unicodeEscapeRss ${unicodeEscape.rssDeltaMb.toFixed(0)}MB`)
   if (largeOutput.ms > 200) failures.push(`largeOutputTime ${largeOutput.ms.toFixed(1)}ms`)

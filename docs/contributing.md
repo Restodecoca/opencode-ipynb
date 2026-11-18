@@ -253,3 +253,16 @@ themselves explicitly rather than staying silent:
   kill of an already-dead process (ESRCH) is success, not a failure.
 - An invalid `OPENCODE_IPYNB_OPTIONS` is surfaced through the services'
   `envOptionsError` and a warning section in `ipynb_doctor`.
+
+### Known limitations
+
+- **Unreproduced suite failure.** One full-suite run on this branch reported a
+  single failure that was never named: sixteen subsequent runs (ten logged per
+  run, one under sustained CPU load) were clean. It is treated as
+  unreproducible rather than fixed, so a future occurrence should be captured
+  with `bun test 2>&1 | tee run.log` and the failing test named.
+- **Write-path memory.** A one-cell edit in a 17 MB / 64k-cell notebook peaks
+  around 250-300 MB RSS. Profiling shows the patcher's offset tree accounts for
+  most of the transient allocation (~240 MB allocated, ~27 MB retained after a
+  forced GC); `scripts/bench-writes.ts` asserts a 350 MB ceiling so a
+  regression is caught, but a lazy node tree would be needed to go lower.
