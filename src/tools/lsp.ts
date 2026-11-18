@@ -127,7 +127,8 @@ export const ipynbLspTool = tool({
         }
         const materialized = await materializeVirtualDocument(
           document,
-          context.directory
+          context.directory,
+          { warningSink: context.warningSink }
         )
         const lines = [
           `Virtual Python document: ${sanitizeInline(materialized.path)}`,
@@ -162,7 +163,11 @@ export const ipynbLspTool = tool({
           metadata: {
             filePath: absolute,
             virtualPath: materialized.path,
-            cells: materialized.cells.slice(0, 1_000)
+            cells: materialized.cells.slice(0, 1_000),
+            ...(materialized.warnings === undefined ||
+            materialized.warnings.length === 0
+              ? {}
+              : { notebookWarnings: materialized.warnings })
           }
         }
       }

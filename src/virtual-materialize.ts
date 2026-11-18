@@ -27,7 +27,7 @@ export interface MaterializedDocument {
 }
 
 export interface MaterializeOptions {
-  readonly warningSink?: WarningSink
+  readonly warningSink?: WarningSink | undefined
 }
 
 export interface CleanupOptions {
