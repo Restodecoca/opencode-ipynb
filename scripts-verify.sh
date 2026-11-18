@@ -44,4 +44,6 @@ for cfg in "$root"/specs/*.cfg; do
   printf '%s\n' "$out" | grep -E 'states generated' | tail -1 | sed 's/^/   /'
 done
 
+rm -f "$root"/specs/*_TTrace_*.bin "$root"/specs/*_TTrace_*.tla
+
 echo "== all checks passed =="
