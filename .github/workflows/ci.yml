@@ -108,7 +108,7 @@ jobs:
         run: ./scripts-verify.sh
 
   windows-typecheck:
-    name: Windows typecheck
+    name: Windows typecheck and tests
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -127,3 +127,6 @@ jobs:
 
       - name: Typecheck tests
         run: bun run typecheck:tests
+
+      - name: Test
+        run: bun test
