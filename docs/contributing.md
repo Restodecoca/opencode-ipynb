@@ -194,6 +194,26 @@ Every review, human or agent, must produce evidence rather than confidence.
 scripts/bench-writes.ts` asserts that write cost stays linear in the notebook
 size; a superlinear result fails the build. CI runs both.
 
+### Host smoke test
+
+The suite runs against an in-process harness. Before a release, load the built
+plugin in a real OpenCode run and confirm the tool surface end to end:
+
+```bash
+bun run build
+mkdir -p /tmp/opencode/e2e && cd /tmp/opencode/e2e
+printf '{"plugins":[{"package":"/abs/path/to/opencode-ipynb","options":{"pythonPath":"/abs/path/to/.venv/bin/python"}}]}\n' > opencode.jsonc
+# create a two-cell n.ipynb here, then:
+opencode run --standalone --archived --format json --auto \
+  "Call ipynb_inspect once on n.ipynb and reply with the cell count."
+opencode run --standalone --archived --format json --auto \
+  "Call ipynb_edit once on n.ipynb to set cell 0 source to 'x = 2' with clearOutputs 'never'."
+```
+
+Expect the inspect output to report the right number of cells, the edit
+metadata to say `writeMode: "patched"`, and the notebook diff to touch exactly
+the edited line. Anything else means the host path diverges from the harness.
+
 ### Deliberately silent sites
 
 These failures stay unreported on purpose; every other swallowed failure
