@@ -212,29 +212,51 @@ theorem strLt_conn (a b : String) (h : ¬ strLt a b = true) :
 def bmpSafe (s : String) : Prop :=
   ∀ c ∈ s.toList, c.toNat < 0xD800 ∨ (0xDFFF < c.toNat ∧ c.toNat ≤ 0xFFFF)
 
+def unitLtFrom : List Nat → List Nat → Bool
+  | [], [] => false
+  | [], _ :: _ => true
+  | _ :: _, [] => false
+  | x :: xs, y :: ys =>
+      if x < y then true else if y < x then false else unitLtFrom xs ys
+
+theorem unitLtFrom_conn (a b : List Nat) (h : ¬ unitLtFrom a b = true) :
+    a = b ∨ unitLtFrom b a = true := by
+  induction a generalizing b with
+  | nil =>
+      cases b with
+      | nil => exact Or.inl rfl
+      | cons y ys =>
+          have hfalse : unitLtFrom [] (y :: ys) = true := rfl
+          exact absurd hfalse h
+  | cons x xs ih =>
+      cases b with
+      | nil => exact Or.inr (by simp [unitLtFrom])
+      | cons y ys =>
+          by_cases hxy : x < y
+          · exact absurd (by simp [unitLtFrom, hxy]) h
+          · by_cases hyx : y < x
+            · exact Or.inr (by simp [unitLtFrom, hyx])
+            · have htail : ¬ unitLtFrom xs ys = true := by
+                simpa [unitLtFrom, hxy, hyx] using h
+              rcases ih ys htail with heq | hlt
+              · left
+                have heqxy : x = y := by omega
+                rw [heqxy, heq]
+              · exact Or.inr (by simp [unitLtFrom, hxy, hyx, hlt])
+
+theorem unitLtFrom_irrefl (a : List Nat) : unitLtFrom a a = false := by
+  induction a with
+  | nil => rfl
+  | cons x xs ih => simp [unitLtFrom, Nat.lt_irrefl, ih]
+
+theorem insertSortedBy_units_sorted (keys : List (List Nat)) (key : List Nat)
+    (hnc : ¬ hasKey keys key = true) (hs : isSortedBy unitLtFrom keys = true) :
+    isSortedBy unitLtFrom (insertSortedBy unitLtFrom hasKey keys key) = true :=
+  insertSortedBy_sorted unitLtFrom hasKey (fun _ _ hmem => hmem) unitLtFrom_conn
+    keys key hnc hs
+
 theorem insertSortedBy_string_sorted (keys : List String) (key : String)
     (_hkeys : ∀ k ∈ keys, bmpSafe k) (_hkey : bmpSafe key)
     (hnc : ¬ hasKey keys key = true) (hs : isSortedBy strLt keys = true) :
     isSortedBy strLt (insertSortedBy strLt hasKey keys key) = true :=
   insertSortedBy_sorted strLt hasKey (fun _ _ hmem => hmem) strLt_conn keys key hnc hs
-
-theorem hasKey_middle (pre post : List α) (key : α) :
-    hasKey (pre ++ [key] ++ post) key = true := by
-  induction pre with
-  | nil => exact hasKey_cons_true key post key (beq_self_eq_true key)
-  | cons k rest ih =>
-      by_cases hk : (k == key) = true
-      · exact hasKey_cons_true k (rest ++ [key] ++ post) key hk
-      · rw [List.cons_append]
-        exact hasKey_cons_tail_true k (rest ++ [key] ++ post) key hk ih
-
-theorem insertSortedBy_hasKey_idempotent (lt : α → α → Bool) (keys : List α) (key : α) :
-    insertSortedBy lt hasKey (insertSortedBy lt hasKey keys key) key =
-      insertSortedBy lt hasKey keys key := by
-  by_cases hmem : hasKey keys key = true
-  · rw [insertSortedBy_noop lt hasKey keys key hmem,
-      insertSortedBy_noop lt hasKey keys key hmem]
-  · obtain ⟨pre, post, hres, _⟩ := insertSortedBy_positions lt hasKey keys key hmem
-    rw [hres, insertSortedBy_noop lt hasKey (pre ++ [key] ++ post) key (hasKey_middle pre post key)]
-
-end OpencodeIpynb
