@@ -44,10 +44,17 @@ export interface V2ToolResult {
   readonly metadata?: Record<string, unknown>
 }
 
-const jsonSchemaFor = (definition: AnyToolDefinition): V2ToolInfo["input"] =>
-  z.toJSONSchema(z.object(definition.args), {
-    io: "input"
-  }) as unknown as V2ToolInfo["input"]
+const jsonSchemaFor = (definition: AnyToolDefinition): V2ToolInfo["input"] => {
+  const schema = z.object(definition.args)
+  const generated = z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>
+  const strict = z.toJSONSchema(schema.strict(), { io: "input" }) as {
+    additionalProperties?: boolean
+  }
+  return {
+    ...generated,
+    ...(strict.additionalProperties === false ? { additionalProperties: false } : {})
+  } as unknown as V2ToolInfo["input"]
+}
 
 const toFileContent = (attachment: ToolAttachment): V2FileContent => {
   const base: V2FileContent = {
@@ -168,7 +175,7 @@ export const toV2Tool = (
   pluginOptions: unknown = pluginContext.options,
   warningSink?: WarningSink
 ): V2ToolInfo => {
-  const argsSchema = z.object(registration.definition.args)
+  const argsSchema = z.object(registration.definition.args).strict()
   return {
     name: registration.name,
     description: registration.definition.description,
