@@ -46,6 +46,16 @@ const { text, next } = build()
 
 patchJsonTextDetailed(text, next, { style })
 
+// win32 Bun freezes `heapUsed` (a retained 20M-element array reports 0 MB), so
+// a heap-delta guard there would pass for every implementation, including a
+// deliberate 480 MB hog. Skip loudly instead of reporting a false green.
+if ((await import("node:process")).platform === "win32") {
+  console.log(
+    "SKIP: heapUsed is frozen on win32, so the allocation guard cannot discriminate there"
+  )
+  process.exit(0)
+}
+
 const samples: Sample[] = []
 for (let run = 0; run < RUNS; run += 1) {
   globalThis.gc?.()
