@@ -328,9 +328,20 @@ const buildFileService = (
     Effect.gen(function* () {
       const parsed = NotebookSchema.safeParse(value)
       if (!parsed.success) {
-        const issues = parsed.error.issues.map(
-          (i) => `${i.path.join(".") || "<root>"}: ${i.message}`
-        )
+        const describe = (
+          issue: { path: PropertyKey[]; message: string; code?: string; errors?: unknown },
+          prefix: string
+        ): string[] => {
+          const path = [prefix, ...issue.path.map(String)].filter(Boolean).join(".")
+          if (issue.code === "invalid_union" && Array.isArray(issue.errors)) {
+            const nested = (issue.errors as Array<Array<{ path: PropertyKey[]; message: string; code?: string; errors?: unknown }>>)
+              .flat()
+              .flatMap((inner) => describe(inner, path))
+            return nested.length > 0 ? nested : [`${path || "<root>"}: ${issue.message}`]
+          }
+          return [`${path || "<root>"}: ${issue.message}`]
+        }
+        const issues = parsed.error.issues.flatMap((issue) => describe(issue, ""))
         return yield* new NotebookValidationError({
           message: "schema validation failed",
           filePath,

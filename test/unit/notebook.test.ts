@@ -880,3 +880,36 @@ describe("cells without execution_count", () => {
     }
   })
 })
+
+describe("union validation errors name the offending field", () => {
+  it("reports cells.0.cell_type instead of a bare 'Invalid input'", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-union-"))
+    const file = path.join(dir, "n.ipynb")
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        cells: [{ cell_type: "codex", metadata: {}, source: ["x"] }],
+        metadata: {},
+        nbformat: 4,
+        nbformat_minor: 5
+      })
+    )
+    try {
+      const exit = await Effect.runPromiseExit(
+        makeNotebookFileService({ worktree: dir }).read(file)
+      )
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Cause.findErrorOption(exit.cause)
+        const value = error._tag === "Some" ? error.value : undefined
+        expect(value).toBeInstanceOf(NotebookValidationError)
+        const issues = (value as { issues?: ReadonlyArray<string> }).issues ?? []
+        expect(issues.join(" | ")).toContain("cells.0.cell_type")
+        expect(issues.join(" | ")).toContain("markdown")
+        expect(issues).not.toContain("cells.0: Invalid input")
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
