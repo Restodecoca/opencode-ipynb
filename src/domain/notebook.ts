@@ -119,13 +119,25 @@ export const applyNotebookDefaults = (raw: unknown): NotebookRaw => {
     metadata?: unknown
     cells: Array<Record<string, unknown>>
   }
+  let top = nb as Record<string, unknown>
   if (nb.metadata === undefined) {
-    insertSorted(nb as Record<string, unknown>, "metadata", {})
+    top = { ...nb }
+    insertSorted(top, "metadata", {})
   }
-  for (const cell of nb.cells) {
-    if (cell["cell_type"] === "code" && cell["outputs"] === undefined) {
-      insertSorted(cell, "outputs", [])
+  let cells: Array<Record<string, unknown>> | undefined
+  for (let index = 0; index < nb.cells.length; index += 1) {
+    const cell = nb.cells[index]!
+    if (cell["cell_type"] !== "code" || cell["outputs"] !== undefined) {
+      if (cells !== undefined) cells.push(cell)
+      continue
     }
+    if (cells === undefined) cells = nb.cells.slice(0, index)
+    const clone: Record<string, unknown> = { ...cell }
+    insertSorted(clone, "outputs", [])
+    cells.push(clone)
   }
-  return raw as NotebookRaw
+  if (cells === undefined) return top as NotebookRaw
+  if (top === (nb as Record<string, unknown>)) top = { ...nb }
+  top["cells"] = cells
+  return top as NotebookRaw
 }
