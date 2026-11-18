@@ -40,6 +40,44 @@ export interface NotebookFileServiceOptions {
   readonly signal?: AbortSignal | undefined
 }
 
+// A parent-directory swap can move the temp file along with the directory, so
+// the writer's remembered path stops existing. The temp name carries a UUID, so
+// it is unambiguous: look in the original directory, its parent, and each
+// sibling directory of the parent (a swapped directory is normally a sibling).
+// Bounded and cheap compared with losing the full notebook as a hidden .tmp.
+const locateTemp = async (
+  known: string,
+  base: string,
+  sink: WarningSink | undefined
+): Promise<string | undefined> => {
+  const exists = (candidate: string): Promise<boolean> =>
+    fsp.stat(candidate).then(
+      (stat) => stat.isFile(),
+      () => false
+    )
+  if (await exists(known)) return known
+  const parent = path.dirname(known)
+  const grandParent = path.dirname(parent)
+  const candidates = [path.join(grandParent, base)]
+  const siblings = await fsp.readdir(grandParent, { withFileTypes: true }).catch((error: unknown) => {
+    sink?.add(
+      warningFrom(
+        "temp-unlink",
+        error,
+        `could not list ${grandParent} while looking for ${base}`
+      )
+    )
+    return []
+  })
+  for (const entry of siblings) {
+    if (entry.isDirectory()) candidates.push(path.join(grandParent, entry.name, base))
+  }
+  for (const candidate of candidates) {
+    if (await exists(candidate)) return candidate
+  }
+  return undefined
+}
+
 const isMissingPath = (error: unknown): boolean => {
   const code = (error as NodeJS.ErrnoException | undefined)?.code
   return code === "ENOENT" || code === "ENOTDIR"
@@ -543,6 +581,11 @@ const buildFileService = (
             targetDir,
             `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
           )
+          // The parent-swap branch below can move the temp to a new directory
+          // before the replace fails; cleanup must unlink wherever it actually
+          // lives, or the full notebook content is left behind as a hidden .tmp.
+          let liveTmp = tmp
+          const extraCleanup: string[] = []
           try {
             if (options?.previousText !== undefined) {
               let current: string | undefined
@@ -623,10 +666,19 @@ const buildFileService = (
             }
             const freshTarget = path.join(rechecked, path.basename(target))
             if (freshTarget !== target) {
-              const moved = await fsp.rename(tmp, path.join(freshDir, path.basename(tmp))).then(
-                () => path.join(freshDir, path.basename(tmp)),
+              const besideFresh = path.join(freshDir, path.basename(tmp))
+              const moved = await fsp.rename(tmp, besideFresh).then(
+                () => {
+                  liveTmp = besideFresh
+                  return besideFresh
+                },
                 () => tmp
               )
+              // If the temp could not follow the directory (the parent is gone
+              // or a different filesystem), it is still at the original path in
+              // the moved-aside directory; record every place it may live so the
+              // failure cleanup removes it.
+              extraCleanup.push(path.join(path.dirname(target), path.basename(tmp)))
               await replaceFile(moved, freshTarget, warningSink)
             } else {
               await replaceFile(tmp, target, warningSink)
@@ -704,14 +756,45 @@ const buildFileService = (
               )
             }
           } catch (err) {
-            try {
-              await fsp.unlink(tmp)
-            } catch (unlinkError) {
-              if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") {
+            const known = [...new Set([liveTmp, tmp, ...extraCleanup])]
+            const found = new Set<string>()
+            for (const candidate of known) {
+              try {
+                await fsp.unlink(candidate)
+                found.add(candidate)
+              } catch (unlinkError) {
+                const code = (unlinkError as NodeJS.ErrnoException).code
+                if (code !== "ENOENT") {
+                  warningSink?.add(
+                    warningFrom("temp-unlink", unlinkError, `left ${candidate}`)
+                  )
+                  found.add(candidate)
+                }
+              }
+            }
+            // A parent swap can leave a second copy behind (the symlink target and
+            // the moved-aside directory). Sweep by the unique temp name every time,
+            // not only when the remembered paths failed to unlink.
+            const base = path.basename(tmp)
+            const relocated = await locateTemp(tmp, base, warningSink)
+            if (relocated !== undefined && !found.has(relocated)) {
+              try {
+                await fsp.unlink(relocated)
+                found.add(relocated)
+              } catch (unlinkError) {
                 warningSink?.add(
-                  warningFrom("temp-unlink", unlinkError, `left ${tmp}`)
+                  warningFrom("temp-unlink", unlinkError, `left ${relocated}`)
                 )
               }
+            }
+            if (found.size === 0 && relocated === undefined) {
+              warningSink?.add(
+                warningFrom(
+                  "temp-unlink",
+                  new Error(`could not locate ${base} to remove it`),
+                  `a temp file from the failed write may remain in the worktree`
+                )
+              )
             }
             throw err
           }

@@ -121,3 +121,54 @@ describe("a parent directory swapped for sidecar materialization", () => {
     }
   })
 })
+
+describe("a failed parent-swap write leaves no temp behind", () => {
+  it("removes the temp even when it moved with the directory", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-swap-temp-"))
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-swap-temp-out-"))
+    const sub = path.join(dir, "sub")
+    fs.mkdirSync(sub)
+    const file = path.join(sub, "n.ipynb")
+    fs.writeFileSync(file, notebook("# A"))
+    setBeforeRenameHook(() => {
+      const parked = path.join(dir, "parked")
+      fs.renameSync(sub, parked)
+      fs.symlinkSync(outside, sub)
+      // The attacker copies the temp so the writer's rename can still find a
+      // source; the replace then fails against the re-validated directory and
+      // the cleanup must not leave the notebook content behind.
+      for (const entry of fs.readdirSync(parked)) {
+        if (entry.endsWith(".tmp")) {
+          fs.copyFileSync(path.join(parked, entry), path.join(outside, entry))
+        }
+      }
+    })
+    const temps = (root: string): string[] =>
+      fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(root, entry.name)
+        if (entry.isDirectory()) return temps(full)
+        return entry.name.endsWith(".tmp") ? [full] : []
+      })
+    try {
+      const svc = makeNotebookFileService({ worktree: dir })
+      const read = await Effect.runPromise(svc.readWithText(file))
+      const edited = {
+        ...read.notebook,
+        cells: [{ cell_type: "markdown", metadata: {}, source: ["# B"] }]
+      }
+      const exit = await Effect.runPromiseExit(
+        svc.writeAtomic(file, edited as never, {
+          format,
+          previousText: read.text
+        })
+      )
+      expect(exit._tag).toBe("Failure")
+      expect(temps(dir)).toEqual([])
+    } finally {
+      setBeforeRenameHook(undefined)
+      fs.rmSync(dir, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})

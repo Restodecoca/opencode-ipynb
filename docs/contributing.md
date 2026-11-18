@@ -275,8 +275,11 @@ themselves explicitly rather than staying silent:
   a fixed 64k-cell notebook, and measures `heapUsed` immediately around
   `patchJsonTextDetailed`: the span implementation allocates 42.5-43.6 MB per
   patch while the eager node tree allocated 161-171 MB, and the guard fails
-  above 60 MB. On win32 Bun freezes `heapUsed` (a retained 20M-element array
-  reports 0 MB), so the guard prints SKIP there rather than a false green; the
-  Linux CI job is where it discriminates. An object-heavy notebook (one key changed in 64k-key metadata)
+  above a 60 MB heap median and 40 MB of cumulative RSS growth. Two signals are
+  needed because Bun only moves `heapUsed` at collection boundaries: a run that
+  retains every output measures 0 MB there but grows RSS by ~85 MB across five
+  runs, which the growth bound catches. On win32 Bun freezes `heapUsed` (a
+  retained 20M-element array reports 0 MB), so the guard prints SKIP there
+  rather than a false green; the Linux CI job is where it discriminates. An object-heavy notebook (one key changed in 64k-key metadata)
   costs ~2-9 MB and is guarded on time only. Retained memory after a forced GC
   is ~25 MB, so the remainder is transient garbage.
