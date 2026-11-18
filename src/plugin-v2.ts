@@ -44,15 +44,59 @@ export interface V2ToolResult {
   readonly metadata?: Record<string, unknown>
 }
 
-const jsonSchemaFor = (definition: AnyToolDefinition): V2ToolInfo["input"] => {
+const conditionalRequirements: Record<string, ReadonlyArray<Record<string, unknown>>> = {
+  ipynb_read: [
+    { required: ["cellIndex"] },
+    { required: ["start", "end"] }
+  ],
+  ipynb_outputs: [
+    {
+      properties: { operation: { enum: ["read", "read_error", "clear_cell"] } },
+      required: ["cellIndex"]
+    }
+  ]
+}
+
+const jsonSchemaFor = (
+  name: string,
+  definition: AnyToolDefinition
+): V2ToolInfo["input"] => {
   const schema = z.object(definition.args)
   const generated = z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>
   const strict = z.toJSONSchema(schema.strict(), { io: "input" }) as {
     additionalProperties?: boolean
   }
+  const alternatives = conditionalRequirements[name]
+  const structural =
+    alternatives === undefined
+      ? {}
+      : name === "ipynb_read"
+        ? {
+            anyOf: [
+              { required: ["cellIndex"], not: { anyOf: [{ required: ["start"] }, { required: ["end"] }] } },
+              { required: ["start", "end"], not: { required: ["cellIndex"] } }
+            ]
+          }
+        : {
+            anyOf: [
+              {
+                properties: {
+                  operation: { enum: ["read", "read_error", "clear_cell"] }
+                },
+                required: ["operation", "cellIndex"]
+              },
+              {
+                properties: {
+                  operation: { enum: ["list", "clear_all"] }
+                },
+                required: ["operation"]
+              }
+            ]
+          }
   return {
     ...generated,
-    ...(strict.additionalProperties === false ? { additionalProperties: false } : {})
+    ...(strict.additionalProperties === false ? { additionalProperties: false } : {}),
+    ...structural
   } as unknown as V2ToolInfo["input"]
 }
 
@@ -179,7 +223,7 @@ export const toV2Tool = (
   return {
     name: registration.name,
     description: registration.definition.description,
-    input: jsonSchemaFor(registration.definition),
+    input: jsonSchemaFor(registration.name, registration.definition),
     options: {
       codemode: false,
       ...(registration.permission === undefined
