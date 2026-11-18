@@ -411,7 +411,10 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
     const svc = makeNotebookFileService({ worktree: dir, warningSink: sink })
     try {
       await Effect.runPromise(
-        svc.writeAtomic(file, notebook as unknown as NotebookRaw)
+        svc.writeAtomic(file, {
+          ...notebook,
+          cells: [{ ...notebook.cells[0]!, source: "x = 2" }]
+        } as unknown as NotebookRaw)
       )
       const warnings = sink.drain()
       expect(warnings.length).toBeGreaterThanOrEqual(1)
