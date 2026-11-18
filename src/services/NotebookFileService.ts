@@ -357,6 +357,13 @@ const buildFileService = (
         })
       }
       yield* validateNotebookShape(notebook, filePath)
+      if (
+        options?.previousText === undefined &&
+        previousText !== undefined &&
+        serialized === previousText
+      ) {
+        return rewrite
+      }
       return yield* Effect.tryPromise({
         try: async () => {
           const dir = path.dirname(filePath)
@@ -446,6 +453,9 @@ const buildFileService = (
                     "the notebook was modified externally; re-read it and retry the edit"
                   ]
                 })
+              }
+              if (current === options.previousText && serialized === previousText) {
+                return rewrite
               }
             }
             await fsp.writeFile(tmp, serialized, {
