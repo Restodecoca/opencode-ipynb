@@ -33,9 +33,10 @@ import {
 import { MAX_NOTEBOOK_BYTES } from "../utils/limits.js"
 import { replaceFile } from "../utils/atomic-replace.js"
 
-interface NotebookFileServiceOptions {
+export interface NotebookFileServiceOptions {
   readonly worktree?: string
   readonly warningSink?: WarningSink | undefined
+  readonly signal?: AbortSignal | undefined
 }
 
 const isMissingPath = (error: unknown): boolean => {
@@ -172,6 +173,16 @@ const buildFileService = (
 ): NotebookFileServiceShape => {
   const worktree = options.worktree
   const warningSink = options.warningSink
+  const abortSignal = options.signal
+  const assertNotAborted = (): void => {
+    if (abortSignal?.aborted === true) {
+      throw new NotebookValidationError({
+        message: "the request was cancelled; nothing was changed",
+        filePath: "",
+        issues: ["the tool call was cancelled by the host"]
+      })
+    }
+  }
   const resolveInside = async (filePath: string): Promise<string> => {
     if (worktree === undefined) return filePath
     const root = await realpathWithRetry(worktree).catch(() => worktree)
@@ -531,6 +542,7 @@ const buildFileService = (
                 return rewrite
               }
             }
+            assertNotAborted()
             const handle = await fsp.open(tmp, "wx", existingMode ?? 0o600)
             try {
               await handle.writeFile(serialized, "utf8")

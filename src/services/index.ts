@@ -163,7 +163,8 @@ export const buildServices = (
   })
   const fileSvc: NotebookFileServiceShape = makeNotebookFileService({
     ...(resolved.allowOutsideWorktree ? {} : { worktree: ctx.worktree }),
-    warningSink
+    warningSink,
+    signal: ctx.abort
   })
   let pythonPath: string | undefined
   let pythonPathError: string | undefined
