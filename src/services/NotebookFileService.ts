@@ -31,7 +31,6 @@ import { MAX_NOTEBOOK_BYTES } from "../utils/limits.js"
 import { replaceFile } from "../utils/atomic-replace.js"
 
 interface NotebookFileServiceOptions {
-  /** When set, real paths are pinned and checked against this worktree. */
   readonly worktree?: string
 }
 
@@ -95,9 +94,6 @@ export interface NotebookFileServiceShape {
   ) => Effect.Effect<A, E, R>
 }
 
-// The lock registry is module-scoped on purpose: buildServices() creates a
-// fresh NotebookFileService for every tool call, so instance-local locks would
-// not serialize concurrent edits of the same notebook.
 interface FileLock {
   readonly sem: Semaphore.Semaphore
   active: number
@@ -156,9 +152,6 @@ const buildFileService = (
               issues: [`size=${stat.size}`]
             })
           }
-          // Open without following the final path component and with
-          // O_NONBLOCK: if the path is swapped to a FIFO between stat and
-          // open, the open does not hang and fstat rejects it.
           const noFollow =
             process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW
           const nonBlock =
@@ -167,9 +160,6 @@ const buildFileService = (
             worktree === undefined
               ? undefined
               : await fsp.realpath(worktree).catch(() => worktree)
-          // When confinement is enabled, resolved is already the real path.
-          // Opening it directly with O_NOFOLLOW rejects a link swapped in
-          // after resolveInside. Without confinement, resolve the alias first.
           const target =
             worktree === undefined
               ? await fsp.realpath(resolved).catch(() => resolved)
@@ -328,9 +318,6 @@ const buildFileService = (
               ? undefined
               : await fsp.realpath(worktree).catch(() => worktree)
           if (root !== undefined) {
-            // Resolve the deepest existing ancestor before mkdir. This accepts
-            // a lexical session path whose real target is inside the worktree
-            // while still rejecting an ancestor symlink that escapes it.
             let probe = dir
             let ancestorReal: string | undefined
             for (let depth = 0; depth < 128; depth += 1) {
@@ -363,8 +350,6 @@ const buildFileService = (
                   }
                   return real
                 })()
-          // Resolve an existing target even without a worktree root so a
-          // symlinked notebook is edited in place instead of replaced.
           const fileReal =
             options?.noFollowFinal === true
               ? undefined
@@ -376,8 +361,6 @@ const buildFileService = (
               worktree: root
             })
           }
-          // Writing a symlink alias must update the target, not replace the
-          // link with a second notebook.
           const target = fileReal ?? path.join(dirReal, path.basename(filePath))
           const targetDir = path.dirname(target)
           const targetStat = await fsp.stat(target).catch(() => undefined)
@@ -469,8 +452,6 @@ const buildFileService = (
           Effect.ensuring(
             Effect.sync(() => {
               lock.active -= 1
-              // Do not keep a semaphore forever for a one-off path. A new
-              // caller either reuses it before this check or creates a new one.
               if (lock.active === 0 && locks.get(key) === lock) {
                 locks.delete(key)
               }

@@ -77,7 +77,6 @@ export interface NotebookExecutionServiceShape {
 export interface ReportEnvOptions {
   readonly timeoutMs?: number | undefined
   readonly signal?: AbortSignal | undefined
-  /** The caller already asserted shell for the probe and helper. */
   readonly skipShellPermission?: boolean | undefined
 }
 
@@ -85,7 +84,6 @@ export interface ExecutionOptions {
   readonly kernelManager?: KernelManagerShape | undefined
   readonly warmKernel: boolean
   readonly defaultTimeoutMs: number
-  /** Configured interpreter, used for the pre-probe shell permission. */
   readonly pythonPath?: string | undefined
 }
 
@@ -111,7 +109,6 @@ const runPython = (
             detached: process.platform !== "win32"
           }
         )
-        // Swallow EPIPE from a helper that exits before reading stdin.
         child.stdin.on("error", () => {})
         const stdoutChunks: Buffer[] = []
         const stderrChunks: Buffer[] = []
@@ -129,14 +126,11 @@ const runPython = (
               try {
                 child.kill(signal)
               } catch {
-                // already gone
               }
             }
           }
         }
         const killTree = () => {
-          // Give the Python helper a chance to kill the Jupyter kernel's
-          // process group (it runs in its own session), then force it.
           signalTree("SIGTERM")
           forceTimer = setTimeout(() => signalTree("SIGKILL"), 750)
           forceTimer.unref?.()
@@ -180,7 +174,6 @@ const runPython = (
           stdoutChunks.push(chunk)
         })
         child.stderr.on("data", (chunk: Buffer) => {
-          // stderr is diagnostic only: keep the tail bounded.
           if (stderrBytes >= 1024 * 1024) return
           stderrBytes += chunk.length
           stderrChunks.push(chunk)
@@ -242,8 +235,6 @@ const runPython = (
       })
     }
     if (!parsed.data.success && parsed.data.error) {
-      // Honor maxOutputChars even on the failure path; the helper caps at
-      // 8k but callers may ask for much less.
       const cap = Math.max(0, payload.maxOutputChars ?? 6_000)
       const ename = parsed.data.error.ename.slice(0, cap)
       const evalue = parsed.data.error.evalue.slice(
@@ -306,7 +297,6 @@ const truncateCellSummary = (
   summary: CellExecutionSummary,
   maxOutputChars: number
 ): CellExecutionSummary => {
-  // One budget for the whole cell: stdout + stderr + result + tracebacks.
   let remaining = Math.max(0, maxOutputChars)
   const take = (text: string | undefined): string | undefined => {
     const value = truncateText(text, remaining, undefined, "output")
@@ -357,8 +347,6 @@ const truncateRunResponse = (
   response: RunResponse,
   maxOutputChars: number
 ): RunResponse => {
-  // Per-cell budget plus a hard per-response budget so a 500-cell notebook
-  // cannot return megabytes of stdout in one tool result.
   let remaining = Math.min(
     MAX_RUN_RESPONSE_CHARS,
     Math.max(0, maxOutputChars) * Math.max(1, response.outputs.length)
@@ -366,7 +354,6 @@ const truncateRunResponse = (
   const outputs = response.outputs.slice(0, 1_000).map((o) => {
     const budget = Math.min(maxOutputChars, remaining)
     const truncated = truncateCellSummary(o, budget)
-    // Account for the status line and structural JSON overhead.
     remaining = Math.max(
       0,
       remaining - cellSummaryChars(truncated) - 200
@@ -487,9 +474,6 @@ export const notebookUsesLineArrays = (notebook: NotebookRaw): boolean =>
 export const buildPersistedOutputs = (
   summary: CellExecutionSummary
 ): Array<Record<string, unknown>> => {
-  // Output order is intentional: stdout, stderr (stream), then the textual
-  // result, then any rich displays, then errors. Jupyter Lab renders them in
-  // this order, so we keep it stable across re-executions.
   const outputs: Array<Record<string, unknown>> = []
   if (summary.stdout !== undefined) {
     outputs.push({
@@ -546,9 +530,6 @@ const makeExecutionImpl = (
   const warmKernel = execOpts?.warmKernel ?? false
   const defaultTimeoutMs = execOpts?.defaultTimeoutMs ?? 120_000
 
-  // Only `all` and `cell` use the warm kernel; the one-shot helper handles
-  // `range` and `from` because those modes don't share state across cells in
-  // a way the warm kernel can reuse, and `env` is a one-shot probe.
   const useWarmKernel = (mode: ExecutionMode): boolean =>
     warmKernel && kernelManager !== undefined && (mode === "all" || mode === "cell")
 
@@ -559,8 +540,6 @@ const makeExecutionImpl = (
         yield* pathSvc.ensureInsideWorktree(abs)
         yield* pathSvc.ensureExists(abs)
         const stat = yield* Effect.tryPromise({
-          // stat follows symlinks: a link to a regular notebook is valid, a
-          // link to a FIFO/socket/device still reports non-regular.
           try: () => fsp.stat(abs),
           catch: (err) =>
             new NotebookValidationError({
@@ -576,20 +555,13 @@ const makeExecutionImpl = (
             issues: ["refusing to read a FIFO, socket, or device"]
           })
         }
-        // Validate schema and the 50 MB limit even when save=false; the
-        // Python helper would otherwise load arbitrary JSON/large files.
         yield* fileSvc.read(abs)
         const displayPath = pathSvc.toDisplay(abs)
         const kernelPath = yield* Effect.promise(() =>
           fsp.realpath(abs).catch(() => abs)
         )
-        // Pin the canonical target before any probe/helper work; the lexical
-        // path can be swapped to an outside symlink after the first check.
         yield* pathSvc.ensureInsideWorktree(kernelPath)
 
-        // Validate the request before we touch Python: a malformed payload is a
-        // user error, not an environment error. This ordering also makes the
-        // service testable in environments without a Python runtime.
         const parsed = RunRequestSchema.safeParse({
           filePath: abs,
           mode: request.mode,
@@ -611,10 +583,6 @@ const makeExecutionImpl = (
             )
           })
         }
-        // The helper must never write the notebook itself: the TypeScript
-        // side asks for `edit` permission and persists outputs atomically.
-        // Keep the full raw outputs available only when the caller asked to
-        // save, so small reads do not pay for base64 images.
         const kernelEnv = kernelEnvOverrides()
         const payload: RunRequest = {
           ...parsed.data,
@@ -648,8 +616,6 @@ const makeExecutionImpl = (
           })
         }
 
-        // Include both the alias the caller used and the pinned real target:
-        // a deny on either identity must be evaluated.
         const lexicalAliases = yield* permSvc.aliases(abs)
         const kernelAliases = yield* permSvc.aliases(kernelPath)
         const absAliases = [...new Set([...lexicalAliases, ...kernelAliases])]
@@ -909,9 +875,6 @@ const makeExecutionImpl = (
             metadata: { filePath: abs, pythonPath: probe.pythonPath }
           })
         }
-        // The 30s floor is a minimum for env-mode (pip freeze + import probes);
-        // the configured defaultTimeoutMs is the upper bound when the caller
-        // does not pass an explicit value.
         const envTimeout = options?.timeoutMs ?? Math.max(30_000, defaultTimeoutMs)
         const envParsed = RunRequestSchema.safeParse({
           filePath: abs,

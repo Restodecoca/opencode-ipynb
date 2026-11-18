@@ -351,7 +351,6 @@ const patchArray = (
   }
 
   if (oldMiddle.length > 0 && newMiddle.length === oldMiddle.length) {
-    // Same length: either a pure reorder (emit raw text) or a per-item edit.
     const reordered =
       oldMiddle.length > 1 &&
       !oldMiddle.every((item, i) => jsonEqual(item, newMiddle[i]))
@@ -391,8 +390,6 @@ const patchArray = (
     return
   }
   if (oldMiddle.length > 0) {
-    // Deletion. Remove the separator adjacent to the removed run so the
-    // remaining items stay well-formed; emptying the array drops the layout.
     if (newMiddle.length === 0 && prefix === 0 && suffix === 0) {
       edits.push({ start: node.start, end: node.end, text: "[]" })
       return
@@ -413,7 +410,6 @@ const patchArray = (
     return
   }
   if (newMiddle.length > 0) {
-    // Insertion.
     const text = newMiddle.map((item) => emitItem(item)).join(separator)
     if (prefix > 0) {
       edits.push({
@@ -456,7 +452,6 @@ const patchObject = (
   const removed = node.entries.filter(
     (entry) => !Object.prototype.hasOwnProperty.call(value, entry.key)
   )
-  // Group consecutive removals into one span so their edits never overlap.
   for (let index = 0; index < node.entries.length; ) {
     const entry = node.entries[index]!
     if (!removed.includes(entry)) {
@@ -508,8 +503,6 @@ const patchObject = (
       return
     }
     const surviving = node.entries.filter((entry) => !removed.includes(entry))
-    // Keys inserted before `anchor` (an existing key) share one edit;
-    // the rest are appended after the last surviving entry.
     const groups = new Map<string, string[]>()
     const appended: string[] = []
     for (const key of [...added].sort()) {
