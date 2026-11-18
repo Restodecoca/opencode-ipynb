@@ -2,9 +2,12 @@ import { Effect } from "effect"
 import { NotebookParseError } from "../domain/errors.js"
 import {
   formatJsonValue,
-  patchJsonText,
-  type JsonTextStyle
+  patchJsonTextDetailed,
+  type JsonTextStyle,
+  type PatchFailureReason
 } from "./json-patch.js"
+
+export type { PatchFailureReason }
 
 export const safeParseJson = (
   text: string,
@@ -106,8 +109,32 @@ export const stringifyNotebook = (
   return format.trailingNewline ? `${body}${format.newline}` : body
 }
 
+export type WriteMode = "patched" | "fallback"
+
+export interface RewriteResult {
+  readonly text: string
+  readonly mode: WriteMode
+  readonly reason?: PatchFailureReason
+}
+
+export const rewriteNotebookTextDetailed = (
+  previousText: string,
+  notebook: unknown,
+  format: NotebookFormat
+): RewriteResult => {
+  const patched = patchJsonTextDetailed(previousText, notebook, { style: format })
+  if (patched.text !== undefined) {
+    return { text: patched.text, mode: "patched" }
+  }
+  return {
+    text: stringifyNotebook(notebook, format),
+    mode: "fallback",
+    ...(patched.reason === undefined ? {} : { reason: patched.reason })
+  }
+}
+
 export const rewriteNotebookText = (
   previousText: string,
   notebook: unknown,
   format: NotebookFormat
-): string => patchJsonText(previousText, notebook, { style: format }) ?? stringifyNotebook(notebook, format)
+): string => rewriteNotebookTextDetailed(previousText, notebook, format).text

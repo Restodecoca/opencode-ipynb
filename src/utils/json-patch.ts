@@ -580,43 +580,60 @@ export interface PatchOptions {
   readonly style: JsonTextStyle
 }
 
-/**
- * Splice only the values that differ into the original JSON text so every
- * untouched byte (layout, escapes, number literals, separators) stays verbatim.
- * Returns `undefined` when the patch cannot be trusted.
- */
-export const patchJsonText = (
+export type PatchFailureReason =
+  | "parse-failed"
+  | "patch-threw"
+  | "overlapping-edits"
+  | "not-representable"
+  | "verification-failed"
+
+export interface PatchResult {
+  readonly text?: string
+  readonly reason?: PatchFailureReason
+}
+
+export const patchJsonTextDetailed = (
   text: string,
   next: unknown,
   options: PatchOptions
-): string | undefined => {
+): PatchResult => {
   let root: JsonNode
   let previous: unknown
   try {
     root = parseNode(text, 0)
     previous = JSON.parse(text) as unknown
   } catch {
-    return undefined
+    return { reason: "parse-failed" }
   }
   const layout: Layout = { text, style: options.style }
   const edits: Edit[] = []
   try {
     patchNode(next, previous, root, edits, layout, "")
   } catch {
-    return undefined
+    return { reason: "patch-threw" }
   }
   if (edits.length === 0) {
-    return jsonEqual(previous, next) ? text : undefined
+    return jsonEqual(previous, next)
+      ? { text }
+      : { reason: "not-representable" }
   }
   const patched = applyEdits(text, edits)
-  if (patched === undefined) return undefined
+  if (patched === undefined) return { reason: "overlapping-edits" }
   try {
-    if (!jsonEqual(JSON.parse(patched), next)) return undefined
+    if (!jsonEqual(JSON.parse(patched), next)) {
+      return { reason: "verification-failed" }
+    }
   } catch {
-    return undefined
+    return { reason: "verification-failed" }
   }
-  return patched
+  return { text: patched }
 }
+
+export const patchJsonText = (
+  text: string,
+  next: unknown,
+  options: PatchOptions
+): string | undefined => patchJsonTextDetailed(text, next, options).text
 
 export const formatJsonValue = (
   value: unknown,

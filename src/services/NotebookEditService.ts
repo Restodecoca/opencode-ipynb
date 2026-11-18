@@ -8,7 +8,8 @@ import {
   PathOutsideWorktreeError,
   PermissionDeniedError
 } from "../domain/errors.js"
-import type { NotebookFileServiceShape } from "./NotebookFileService.js"
+import type { NotebookFileServiceShape, WriteMode } from "./NotebookFileService.js"
+import type { PatchFailureReason } from "../utils/json.js"
 import { assertRevisionUnchanged, contentHash, pinRealPath } from "./revision.js"
 import { randomUUID } from "node:crypto"
 import type { PathServiceShape } from "./PathService.js"
@@ -33,6 +34,8 @@ export interface EditResult {
   readonly clearedOutputs: boolean
   readonly changed: boolean
   readonly notebook: NotebookRaw
+  readonly writeMode: WriteMode
+  readonly writeModeReason?: PatchFailureReason | undefined
 }
 
 export interface InsertResult {
@@ -233,7 +236,8 @@ const makeEditImpl = (
                 cellType: cell.cell_type,
                 clearedOutputs: false,
                 changed: false,
-                notebook
+                notebook,
+                writeMode: "patched" as const
               }
             }
 
@@ -280,7 +284,7 @@ const makeEditImpl = (
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
-            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+            const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
               previousText: snapshot.text
@@ -293,7 +297,9 @@ const makeEditImpl = (
               cellType: cell.cell_type,
               clearedOutputs,
               changed: true,
-              notebook: newNotebook
+              notebook: newNotebook,
+              writeMode: write.mode,
+              writeModeReason: write.reason
             }
           })
         )

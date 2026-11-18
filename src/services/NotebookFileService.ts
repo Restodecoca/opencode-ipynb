@@ -11,10 +11,18 @@ import {
   PathOutsideWorktreeError
 } from "../domain/errors.js"
 import { NotebookSchema, applyNotebookDefaults, type NotebookRaw } from "../domain/notebook.js"
+import type { PatchFailureReason, WriteMode } from "../utils/json.js"
+
+export type { WriteMode }
+
+export interface WriteOutcome {
+  readonly mode: WriteMode
+  readonly reason?: PatchFailureReason | undefined
+}
 import {
   DEFAULT_NOTEBOOK_FORMAT,
   detectNotebookFormat,
-  rewriteNotebookText,
+  rewriteNotebookTextDetailed,
   safeParseJson,
   stringifyNotebook,
   type NotebookFormat
@@ -75,7 +83,7 @@ export interface NotebookFileServiceShape {
       readonly previousText?: string
     }
   ) => Effect.Effect<
-    void,
+    WriteOutcome,
     | NotebookParseError
     | NotebookValidationError
     | NotebookWriteError
@@ -287,7 +295,7 @@ const buildFileService = (
       readonly previousText?: string
     }
   ): Effect.Effect<
-    void,
+    WriteOutcome,
     | NotebookParseError
     | NotebookValidationError
     | NotebookWriteError
@@ -300,10 +308,10 @@ const buildFileService = (
           : yield* readExistingText(filePath)
       const format = options?.format ?? (stored === undefined ? DEFAULT_NOTEBOOK_FORMAT : detectNotebookFormat(stored))
       const previousText = options?.previousText ?? stored
-      const serialized =
-        previousText === undefined
-          ? stringifyNotebook(notebook, format)
-          : rewriteNotebookText(previousText, notebook, format)
+      const rewrite = previousText === undefined
+        ? { text: stringifyNotebook(notebook, format), mode: "fallback" as const, reason: undefined }
+        : rewriteNotebookTextDetailed(previousText, notebook, format)
+      const serialized = rewrite.text
       if (Buffer.byteLength(serialized, "utf8") > MAX_NOTEBOOK_BYTES) {
         return yield* new NotebookValidationError({
           message: `refusing to write a notebook larger than ${MAX_NOTEBOOK_BYTES} bytes`,
@@ -312,7 +320,7 @@ const buildFileService = (
         })
       }
       yield* parseAndValidate(serialized, filePath)
-      yield* Effect.tryPromise({
+      return yield* Effect.tryPromise({
         try: async () => {
           const dir = path.dirname(filePath)
           const root =
@@ -414,6 +422,7 @@ const buildFileService = (
             })
             throw err
           }
+          return rewrite
         },
         catch: (err) =>
           err instanceof PathOutsideWorktreeError
