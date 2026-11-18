@@ -3,7 +3,6 @@ import { Effect } from "effect"
 export type WarningSource =
   | "atomic-replace"
   | "cleanup"
-  | "format-detection"
   | "json-patch"
   | "lock"
   | "permission-alias"
