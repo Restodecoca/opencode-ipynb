@@ -556,6 +556,51 @@ export const buildPersistedOutputs = (
   return outputs
 }
 
+export interface MergeShapeInputs {
+  readonly fallback: TextShape
+  readonly beforeShapes: ReadonlyMap<number, TextShape> | undefined
+  readonly beforeValueShapes: ReadonlyMap<number, CellValueShapes> | undefined
+}
+
+export const mergeExecutedOutputs = (
+  filePath: string,
+  cells: ReadonlyArray<CellRaw>,
+  executedCells: ReadonlyArray<number>,
+  summaries: ReadonlyArray<CellExecutionSummary>,
+  shapes: MergeShapeInputs
+): Effect.Effect<Map<number, CodeCellRaw>, CellIndexOutOfBoundsError> =>
+  Effect.gen(function* () {
+    const merged = new Map<number, CodeCellRaw>()
+    for (const idx of executedCells) {
+      if (idx < 0 || idx >= cells.length) {
+        return yield* new CellIndexOutOfBoundsError({
+          message: `runner reported executed cell ${idx} but notebook has ${cells.length} cells`,
+          filePath,
+          cellIndex: idx,
+          total: cells.length
+        })
+      }
+      const cell = cells[idx] as CellRaw
+      if (cell.cell_type !== "code") continue
+      const summary = summaries.find((o) => o.cellIndex === idx)
+      if (summary === undefined) continue
+      const next: CodeCellRaw = {
+        ...cell,
+        outputs: restoreValueShapes(
+          summary.rawOutputs ?? buildPersistedOutputs(summary),
+          shapes.beforeValueShapes?.get(idx),
+          shapes.beforeShapes?.get(idx) ?? shapes.fallback
+        ) as CodeCellRaw["outputs"],
+        execution_count:
+          summary.executionCount !== undefined && summary.executionCount !== null
+            ? summary.executionCount
+            : null
+      }
+      merged.set(idx, next)
+    }
+    return merged
+  })
+
 const makeExecutionImpl = (
   pathSvc: PathServiceShape,
   fileSvc: NotebookFileServiceShape,
@@ -817,35 +862,18 @@ const makeExecutionImpl = (
               const snapshot = yield* fileSvc.readWithText(kernelPath)
               const notebook = snapshot.notebook
               if (notebook.cells.length > 0) {
-                const cellsByIndex = new Map<number, CodeCellRaw>()
                 const notebookShape = notebookTextShape(notebook)
-                for (const idx of response.executedCells) {
-                  if (idx < 0 || idx >= notebook.cells.length) {
-                    return yield* new CellIndexOutOfBoundsError({
-                      message: `runner reported executed cell ${idx} but notebook has ${notebook.cells.length} cells`,
-                      filePath: abs,
-                      cellIndex: idx,
-                      total: notebook.cells.length
-                    })
+                const cellsByIndex = yield* mergeExecutedOutputs(
+                  abs,
+                  notebook.cells as ReadonlyArray<CellRaw>,
+                  response.executedCells,
+                  response.outputs,
+                  {
+                    fallback: notebookShape,
+                    beforeShapes,
+                    beforeValueShapes
                   }
-                  const cell = notebook.cells[idx] as CellRaw
-                  if (cell.cell_type !== "code") continue
-                  const summary = response.outputs.find((o) => o.cellIndex === idx)
-                  if (!summary) continue
-                  const next: CodeCellRaw = {
-                    ...cell,
-                    outputs: restoreValueShapes(
-                      summary.rawOutputs ?? buildPersistedOutputs(summary),
-                      beforeValueShapes?.get(idx),
-                      beforeShapes?.get(idx) ?? notebookShape
-                    ) as CodeCellRaw["outputs"],
-                    execution_count:
-                      summary.executionCount !== undefined && summary.executionCount !== null
-                        ? summary.executionCount
-                        : null
-                  }
-                  cellsByIndex.set(idx, next)
-                }
+                )
                 if (cellsByIndex.size > 0) {
                   if (
                     beforeHash !== undefined &&
