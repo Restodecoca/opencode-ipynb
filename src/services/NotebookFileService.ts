@@ -458,11 +458,13 @@ const buildFileService = (
                 return rewrite
               }
             }
-            await fsp.writeFile(tmp, serialized, {
-              encoding: "utf8",
-              flag: "wx",
-              mode: existingMode ?? 0o600
-            })
+            const handle = await fsp.open(tmp, "wx", existingMode ?? 0o600)
+            try {
+              await handle.writeFile(serialized, "utf8")
+              await handle.sync()
+            } finally {
+              await handle.close()
+            }
             if (existingMode !== undefined) await fsp.chmod(tmp, existingMode)
             await replaceFile(tmp, target)
           } catch (err) {
