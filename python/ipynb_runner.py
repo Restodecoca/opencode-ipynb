@@ -121,13 +121,19 @@ def _run_pip_freeze(python_executable: str, timeout_s: int = 30) -> List[str]:
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
-    raw = subprocess.check_output(
-        [python_executable, "-E", "-c", PIP_FREEZE_CODE],
-        cwd=tempfile.gettempdir(),
-        env=env,
-        stderr=subprocess.PIPE,
-        timeout=timeout_s,
-    )
+    try:
+        raw = subprocess.check_output(
+            [python_executable, "-E", "-c", PIP_FREEZE_CODE],
+            cwd=tempfile.gettempdir(),
+            env=env,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+        )
+    except subprocess.CalledProcessError:
+        # A venv created with --without-pip (or a bare interpreter) can still
+        # run notebooks; the package list is diagnostic, so report it as empty
+        # instead of failing the whole env report.
+        return []
     text = raw.decode("utf-8", errors="replace")
     return [line.strip() for line in text.splitlines() if line.strip()]
 
