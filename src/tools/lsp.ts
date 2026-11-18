@@ -273,7 +273,9 @@ export const ipynbLspTool = tool({
                   ? "pyright analyzed zero files. Its configuration likely excludes this sidecar; adjust `exclude`/`include` so diagnostics are meaningful."
                   : result.skipped === "temp-unwritable"
                     ? "Neither the notebook directory nor the system temp directory is writable for the diagnostics temp file."
-                    : "Diagnostics failed (pyright returned invalid output or could not run); no conclusion was reached."
+                    : result.skipped === "unsafe-shell-command"
+                      ? "Diagnostics were skipped: the pyright command or one of its arguments contains characters a shell would reinterpret (for example % or &). Rename pyright, or the notebook directory, so the command line is free of shell metacharacters."
+                      : "Diagnostics failed (pyright returned invalid output or could not run); no conclusion was reached."
         return {
           title: `ipynb_lsp ${input.filePath}`,
           output: message,

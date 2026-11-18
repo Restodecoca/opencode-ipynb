@@ -10,6 +10,7 @@ export type WarningSource =
   | "path-resolution"
   | "python-probe"
   | "revision-check"
+  | "shell-command"
   | "sidecar-cleanup"
   | "temp-unlink"
 

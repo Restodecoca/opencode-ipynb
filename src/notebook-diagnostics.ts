@@ -57,9 +57,46 @@ export interface NotebookDiagnosticsResult {
     | "not-analyzed"
     | "temp-unwritable"
     | "pyright-not-executable"
+    | "unsafe-shell-command"
 }
 
 class TempFileError extends Error {}
+
+export class ShellCommandError extends Error {}
+
+export const hasShellMetacharacters = (value: string): boolean =>
+  /["%&|<>^\r\n]/.test(value)
+
+export const shellCommandRefusal = (
+  command: string,
+  args: ReadonlyArray<string>,
+  shell: boolean
+): ShellCommandError | undefined => {
+  if (!shell) return undefined
+  if (hasShellMetacharacters(command)) {
+    return new ShellCommandError(
+      `the pyright command ${JSON.stringify(command)} contains shell metacharacters`
+    )
+  }
+  const index = args.findIndex(hasShellMetacharacters)
+  if (index >= 0) {
+    return new ShellCommandError(
+      `pyright argument ${JSON.stringify(args[index])} contains shell metacharacters`
+    )
+  }
+  return undefined
+}
+
+export const diagnosticsSkipReason = (
+  error: unknown
+): NonNullable<NotebookDiagnosticsResult["skipped"]> => {
+  if (error instanceof TempFileError) return "temp-unwritable"
+  if (error instanceof ShellCommandError) return "unsafe-shell-command"
+  const code = (error as NodeJS.ErrnoException).code
+  if (code === "ENOENT") return "pyright-not-found"
+  if (code === "EACCES" || code === "EPERM" || code === "EROFS") return "pyright-not-executable"
+  return "invalid-output"
+}
 
 const isMissingPath = (error: unknown): boolean => {
   const code = (error as NodeJS.ErrnoException | undefined)?.code
@@ -148,6 +185,11 @@ const runPyright = (
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
       resolve({ stdout: "", stderr: "", code: null, timedOut: false, aborted: true })
+      return
+    }
+    const refusal = shellCommandRefusal(command, args, shell)
+    if (refusal !== undefined) {
+      reject(refusal)
       return
     }
     const detached = process.platform !== "win32"
@@ -399,8 +441,11 @@ export const isPyrightAvailable = async (
     )
     ok = outcome.code === 0 && !outcome.timedOut && !outcome.aborted
     if (outcome.timedOut || outcome.aborted) cacheable = false
-  } catch {
+  } catch (error) {
     ok = false
+    if (error instanceof ShellCommandError) {
+      sink?.add(warningFrom("python-probe", error, "checking pyright availability"))
+    }
   }
   if (cacheable) pyrightAvailability.set(key, { at: Date.now(), ok })
   return ok
@@ -798,19 +843,14 @@ export const diagnoseNotebook = async (
       }
     } catch (error) {
       if (error instanceof PermissionDeniedError) throw error
-      const code = (error as NodeJS.ErrnoException).code
+      if (error instanceof ShellCommandError) {
+        record(warningFrom("shell-command", error, "running pyright for diagnostics"))
+      }
       return {
         filePath,
         diagnostics: [],
         text: "",
-        skipped:
-          error instanceof TempFileError
-            ? "temp-unwritable"
-            : code === "ENOENT"
-              ? "pyright-not-found"
-              : code === "EACCES" || code === "EPERM" || code === "EROFS"
-                ? "pyright-not-executable"
-                : "invalid-output"
+        skipped: diagnosticsSkipReason(error)
       }
     } finally {
       if (wroteTemp) {
