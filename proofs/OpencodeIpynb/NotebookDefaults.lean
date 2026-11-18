@@ -280,4 +280,12 @@ theorem applyDefaults_singleton_defaults_idempotent (entries : List Entry)
       (applyDefaults entries [(key, value)]).map Prod.fst :=
   applyDefaults_keys_stable entries [(key, value)]
 
+/- The TS stores keys in a JS object, and JS reorders integer-like keys ahead of
+   string keys (`{"2":a,"1":b}` serializes as `{"1":..,"2":..}`). `Entry` is a
+   plain list, so the model cannot express that reordering: it models the
+   list-level insert, which is what `insertSorted` consumes. The byte-order
+   claim for integer-like keys therefore rests on the JS engine, not on this
+   development; `test/unit/notebook-layout.test.ts` pins the observable
+   behavior. -/
+
 end OpencodeIpynb

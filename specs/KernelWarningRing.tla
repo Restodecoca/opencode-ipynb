@@ -81,6 +81,10 @@ NoDuplicatesWithinEpoch ==
 
 \* The delivered history is bounded by what is still deduplicated plus
 \* one full threshold window per clear.
+\* The anti-leak clear bounds how many messages survive between clears. This
+\* invariant alone does NOT pin that the clear happens: if `seen` never clears,
+\* it grows and the bound still holds. NoDuplicatesWithinEpoch is what pins the
+\* ring's shape, and the twin demonstrates why both are needed.
 DeliveredBounded ==
   delivered <= Cardinality(seen) + ClearThreshold * epochs
 

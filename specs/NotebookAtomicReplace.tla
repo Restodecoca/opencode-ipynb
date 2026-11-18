@@ -1,4 +1,9 @@
 ---------------- MODULE NotebookAtomicReplace ----------------
+\* Scope: this models ONLY the win32 branch of utils/atomic-replace.ts. On
+\* POSIX the module returns after the first rename (or rethrows), so the
+\* backup/restore/cleanup states below are unreachable there: the POSIX
+\* protocol is the DirectOk / DirectFailRaise pair. A POSIX deployment of this
+\* spec would be a much smaller model, not this one.
 EXTENDS Naturals
 
 VARIABLES phase, target, backup, temp, raised, warned
