@@ -15,6 +15,7 @@ import {
 } from "../../src/services/index.js"
 import { CellIndexOutOfBoundsError, NotebookNotFoundError, NotebookParseError, NotebookValidationError } from "../../src/domain/errors.js"
 import { buildServices } from "../../src/services/index.js"
+import { makeWarningSink } from "../../src/utils/warnings.js"
 import { inspectCell } from "../../src/format/diagnostics.js"
 import { formatOutputs } from "../../src/format/outputs.js"
 import type { ToolContext } from "../../src/tool.js"
@@ -764,5 +765,59 @@ describe("inspectCell > large streams", () => {
       0
     )
     expect(inspected.hasLargeOutput).toBe(true)
+  })
+})
+
+describe("write refusal on unreadable targets", () => {
+  it("refuses to overwrite a notebook it cannot read", async () => {
+    if (process.platform === "win32") return
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-unreadable-"))
+    const file = path.join(dir, "n.ipynb")
+    const original = `${JSON.stringify(
+      { cells: [], metadata: { secret: "keep-me" }, nbformat: 4, nbformat_minor: 5 },
+      null,
+      1
+    )}\n`
+    fs.writeFileSync(file, original)
+    fs.chmodSync(file, 0o000)
+    const sink = makeWarningSink()
+    const svc = makeNotebookFileService({ worktree: dir, warningSink: sink })
+    try {
+      const exit = await Effect.runPromiseExit(
+        svc.writeAtomic(file, {
+          cells: [],
+          metadata: { replaced: true },
+          nbformat: 4,
+          nbformat_minor: 5
+        } as never)
+      )
+      expect(exit._tag).toBe("Failure")
+      fs.chmodSync(file, 0o600)
+      expect(fs.readFileSync(file, "utf8")).toBe(original)
+    } finally {
+      fs.chmodSync(file, 0o600)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("still creates a notebook that does not exist yet", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-create-"))
+    const file = path.join(dir, "new.ipynb")
+    const svc = makeNotebookFileService({ worktree: dir })
+    try {
+      const outcome = await Effect.runPromise(
+        svc.writeAtomic(file, {
+          cells: [],
+          metadata: {},
+          nbformat: 4,
+          nbformat_minor: 5
+        } as never)
+      )
+      expect(outcome.mode).toBe("fallback")
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toBeDefined()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -359,18 +359,40 @@ const buildFileService = (
 
   const readExistingText = (
     filePath: string
-  ): Effect.Effect<string | undefined, NotebookParseError> =>
+  ): Effect.Effect<string | undefined, NotebookParseError | NotebookValidationError> =>
     Effect.gen(function* () {
-      const bytes = yield* Effect.tryPromise({
-        try: async () => {
+      const outcome = yield* Effect.promise(async () => {
+        try {
           const stat = await fsp.stat(filePath)
-          if (!stat.isFile() || stat.size > MAX_NOTEBOOK_BYTES) return undefined
-          return await fsp.readFile(filePath)
-        },
-        catch: () => undefined
-      }).pipe(Effect.orElseSucceed(() => undefined))
-      if (bytes === undefined) return undefined
-      return yield* decodeNotebookBytes(bytes, filePath)
+          if (!stat.isFile()) return { kind: "unreadable" as const, detail: "not a regular file" }
+          if (stat.size > MAX_NOTEBOOK_BYTES) {
+            return {
+              kind: "unreadable" as const,
+              detail: `size=${stat.size} exceeds the ${MAX_NOTEBOOK_BYTES} byte limit`
+            }
+          }
+          const bytes = await fsp.readFile(filePath)
+          return { kind: "read" as const, bytes }
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if (code === "ENOENT" || code === "ENOTDIR") {
+            return { kind: "absent" as const }
+          }
+          return {
+            kind: "unreadable" as const,
+            detail: (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error))
+          }
+        }
+      })
+      if (outcome.kind === "absent") return undefined
+      if (outcome.kind === "unreadable") {
+        return yield* new NotebookValidationError({
+          message: "the existing notebook could not be read; refusing to overwrite it",
+          filePath,
+          issues: [outcome.detail, "fix the file permissions or remove the file explicitly"]
+        })
+      }
+      return yield* decodeNotebookBytes(outcome.bytes, filePath)
     })
 
   const writeAtomic = (
