@@ -180,6 +180,10 @@ export const toV2Tool = (
         : { permission: registration.permission })
     },
     async execute(rawInput, context) {
+      if (context.signal?.aborted) {
+        const message = "the request was cancelled; nothing was changed"
+        return { content: `Error: ${message}`, metadata: { error: true, message } }
+      }
       const parsed = argsSchema.safeParse(rawInput ?? {})
       if (!parsed.success) {
         const message = parsed.error.issues
