@@ -167,6 +167,16 @@ Every review, human or agent, must produce evidence rather than confidence.
    and references were inspected; claim no navigation that did not happen.
 3. **Model the state machines.** `specs/` holds TLA+ models; `tlc` must agree.
    Concurrency, locking, and revision checks belong there, not in prose.
+   Each good spec is paired with a dishonest twin that must violate its
+   declared `.expect` line, and every checked invariant is probed for
+   vacuity: a temporary inverse invariant must be violated to prove the
+   pinned path is reachable. Two assumptions are stated in the modules
+   themselves: the save spec collapses the under-lock recheck and the
+   rename into one step (the in-process file lock serializes plugin
+   writers; a non-cooperating external writer keeps a residual window no
+   in-process protocol can close), and the lock spec keeps
+   `ExternalWrite` enabled while a writer holds the lock, because
+   external writers never take our semaphore.
 4. **Prove the pure properties.** `proofs/` holds the Lean 4 development;
    `lake build` must succeed. Shape and round-trip invariants belong there.
 5. **Test both ways.** Run the suite, and run the opposite mutation: if a fix
