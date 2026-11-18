@@ -130,3 +130,27 @@ jobs:
 
       - name: Test
         run: bun test
+
+  macos:
+    name: macOS typecheck and tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Typecheck tests
+        run: bun run typecheck:tests
+
+      - name: Test
+        run: bun test
