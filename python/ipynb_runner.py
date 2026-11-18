@@ -80,7 +80,11 @@ def _read_request_line() -> Dict[str, Any]:
     return json.loads(line)
 
 
-def _write_response(response: Dict[str, Any]) -> None:
+def _write_response(
+    response: Dict[str, Any], nonce: Optional[str] = None
+) -> None:
+    if nonce is not None:
+        response["nonce"] = nonce
     sys.stdout.write(json.dumps(response))
     sys.stdout.write("\n")
     sys.stdout.flush()
@@ -947,6 +951,7 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
 
     ready_response: Dict[str, Any] = {
         "ready": True,
+        "nonceVersion": 1,
         "pid": os.getpid(),
         "kernelPid": _kernel_pid(client),
         "kernelName": kernel_name,
@@ -992,6 +997,9 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
             mode = req.get("mode")
             if mode == "shutdown":
                 break
+            request_nonce = req.get("nonce")
+            if not isinstance(request_nonce, str):
+                request_nonce = None
 
             try:
                 response = _run_serve_request(req, client, nb, file_path)
@@ -1006,7 +1014,8 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
                         str(exc),
                         -1,
                         request_id=req_id,
-                    )
+                    ),
+                    request_nonce,
                 )
                 break
             except Exception as exc:
@@ -1022,7 +1031,7 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
                     request_id=req_id,
                 )
 
-            _write_response(response)
+            _write_response(response, request_nonce)
             requests_handled += 1
     except KeyboardInterrupt:
         return 0

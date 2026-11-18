@@ -74,7 +74,8 @@ IFS= read -r init
 printf '{"ready": true, "pid": %s, "kernelPid": %s}\\n' "$$" "$$"
 IFS= read -r req
 id=$(printf '%s' "$req" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p')
-printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outputs": []}\\n' "$id"
+nonce=$(printf '%s' "$req" | sed -n 's/.*"nonce"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\\1/p')
+printf '{"id": %s, "nonce": "%s", "success": true, "executedCells": [], "durationMs": 1, "outputs": []}\\n' "$id" "$nonce"
 `
   )
 
@@ -163,7 +164,8 @@ printf '{"ready": true, "pid": 1, "kernelPid": 2}\\n'
 IFS= read -r req
 printf 'not json either\\n'
 id=$(printf '%s' "$req" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p')
-printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outputs": []}\\n' "$id"
+nonce=$(printf '%s' "$req" | sed -n 's/.*"nonce"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\\1/p')
+printf '{"id": %s, "nonce": "%s", "success": true, "executedCells": [], "durationMs": 1, "outputs": []}\\n' "$id" "$nonce"
 `
     )
     const mgr = makeKernelManager({

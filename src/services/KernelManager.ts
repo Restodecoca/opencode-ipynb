@@ -3,6 +3,7 @@ import { killWindowsTree } from "../utils/windows.js"
 import { promises as fsp, realpathSync } from "node:fs"
 import { Effect } from "effect"
 import { StringDecoder } from "node:string_decoder"
+import { randomUUID } from "node:crypto"
 import { PythonRunnerError, type NotebookError } from "../domain/errors.js"
 import {
   RunResponseSchema,
@@ -52,6 +53,7 @@ interface PendingRequest {
   timer: NodeJS.Timeout | undefined
   cleanup?: () => void
   sink?: WarningSink | undefined
+  nonce: string
 }
 
 interface KernelState {
@@ -64,6 +66,7 @@ interface KernelState {
   kernelPid: number | undefined
   nextId: number
   inflight: number
+  nonceRequired: boolean
   pending: Map<number, PendingRequest>
   readyPromise: Promise<void>
   resolveReady: () => void
@@ -321,6 +324,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       kernelPid: undefined,
       nextId: 1,
       inflight: 0,
+      nonceRequired: false,
       pending: new Map(),
       readyPromise: readyDeferred.promise,
       resolveReady: readyDeferred.resolve,
@@ -377,6 +381,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         if (typeof m.kernelPid === "number" && m.kernelPid > 0) {
           state.kernelPid = m.kernelPid
         }
+        state.nonceRequired = m.nonceVersion === 1
         state.readyResolved = true
         state.resolveReady()
         return
@@ -399,6 +404,20 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       if (id === undefined) return
       const handler = state.pending.get(id)
       if (!handler) return
+      if (
+        state.nonceRequired &&
+        (typeof m.nonce !== "string" || m.nonce !== handler.nonce)
+      ) {
+        record(
+          state,
+          warningFrom(
+            "python-probe",
+            new Error("ignored a kernel line whose nonce does not match the request"),
+            `id=${id}`
+          )
+        )
+        return
+      }
       state.pending.delete(id)
       clearTimeout(handler.timer)
       handler.cleanup?.()
@@ -611,6 +630,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     new Promise((resolve) => {
       const id = state.nextId++
       state.shutdownRequestId = id
+      const shutdownNonce = randomUUID()
       const timer = setTimeout(() => {
         state.pending.delete(id)
         handlerCleanup?.()
@@ -621,6 +641,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       }, 2_000)
       let handlerCleanup: (() => void) | undefined
       state.pending.set(id, {
+        nonce: shutdownNonce,
         resolve: () => {
           clearTimeout(timer)
           handlerCleanup?.()
@@ -788,6 +809,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         state.inflight = Math.max(0, state.inflight - 1)
       }
       const id = state.nextId++
+      const nonce = randomUUID()
       const raw = yield* Effect.tryPromise<RunResponse, PythonRunnerError>({
         try: () =>
           new Promise<RunResponse>((resolve, reject) => {
@@ -829,7 +851,8 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
                 cleanupAbort?.()
                 releaseInflight()
               },
-              ...(requestSink === undefined ? {} : { sink: requestSink })
+              ...(requestSink === undefined ? {} : { sink: requestSink }),
+              nonce
             })
             const onAbort = () => {
               if (timer !== undefined) clearTimeout(timer)
@@ -853,7 +876,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
             cleanupAbort = () =>
               options?.signal?.removeEventListener("abort", onAbort)
             try {
-              const payload = JSON.stringify({ id, ...request }) + "\n"
+              const payload = JSON.stringify({ id, nonce, ...request }) + "\n"
               const stdin = state.proc.stdin
               if (!stdin || !stdin.writable) {
                 state.pending.delete(id)
