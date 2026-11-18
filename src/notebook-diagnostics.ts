@@ -700,7 +700,7 @@ export const diagnoseNotebook = async (
         })
         throw error
       }
-      await handle.close()
+      await closeHandle(handle, file)
     }
 
     const text = sanitizeNotebookText(document)

@@ -224,8 +224,6 @@ cannot see — and fails unless each silent site appears with its exact count:
 - Chaining an existing lock (`await previous.catch(() => {})` in
   `KernelManager` and `notebook-diagnostics`) — the previous holder already
   ran; there is no intent to defeat.
-- Closing a read-only file descriptor we are done with
-  (`NotebookFileService`) — no data can be lost and there is no remedy.
 - The host's `context.progress()` (`plugin-v2`) — a refused progress update
   is not a plugin failure.
 - Existence and executability probes (`PythonService` ×3, the PATH scan in

@@ -486,8 +486,20 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
       )
       const warnings = sink.drain()
       expect(warnings.length).toBeGreaterThanOrEqual(1)
-      expect(warnings.every((warning) => warning.source === "path-resolution")).toBe(true)
-      expect(warnings.some((warning) => (warning.detail ?? "").includes("n.ipynb"))).toBe(true)
+      expect(
+        warnings.every(
+          (warning) =>
+            warning.source === "path-resolution" ||
+            warning.source === "revision-check"
+        )
+      ).toBe(true)
+      expect(
+        warnings.some(
+          (warning) =>
+            warning.source === "path-resolution" &&
+            (warning.detail ?? "").includes("n.ipynb")
+        )
+      ).toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

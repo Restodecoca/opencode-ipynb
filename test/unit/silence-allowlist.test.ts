@@ -9,7 +9,6 @@ const silentCatch =
 
 const allowlist = new Map<string, number>([
   ["services/KernelManager.ts|.catch(() => {})", 1],
-  ["services/NotebookFileService.ts|.catch(() => {})", 1],
   ["notebook-diagnostics.ts|.catch(() => {})", 1],
   ["plugin-v2.ts|.catch(() => {})", 1],
   ["services/PythonService.ts|catch { }", 3],
