@@ -13,6 +13,7 @@ import {
 import { NotebookSchema, applyNotebookDefaults, type NotebookRaw } from "../domain/notebook.js"
 import type { PatchFailureReason, WriteMode } from "../utils/json.js"
 import { absoluteDriveRoot } from "../utils/paths.js"
+import { realpathWithRetry } from "../utils/realpath.js"
 import { type WarningSink, warningFrom } from "../utils/warnings.js"
 
 export type { WriteMode }
@@ -174,7 +175,7 @@ const buildFileService = (
   const resolveInside = async (filePath: string): Promise<string> => {
     if (worktree === undefined) return filePath
     const root = await fsp.realpath(worktree).catch(() => worktree)
-    const real = await fsp.realpath(filePath)
+    const real = await realpathWithRetry(filePath)
     if (!inside(root, real)) {
       throw new PathOutsideWorktreeError({
         message: "path resolves outside of the worktree (symlink)",

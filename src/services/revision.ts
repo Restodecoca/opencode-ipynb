@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto"
-import { promises as fsp } from "node:fs"
 import { Effect } from "effect"
 import {
   NotebookNotFoundError,
@@ -8,6 +7,7 @@ import {
   PathOutsideWorktreeError
 } from "../domain/errors.js"
 import type { NotebookFileServiceShape } from "./NotebookFileService.js"
+import { realpathWithRetry } from "../utils/realpath.js"
 
 type RevisionError =
   | NotebookNotFoundError
@@ -16,7 +16,7 @@ type RevisionError =
   | PathOutsideWorktreeError
 
 export const pinRealPath = (filePath: string): Effect.Effect<string, never> =>
-  Effect.promise(() => fsp.realpath(filePath).catch(() => filePath))
+  Effect.promise(() => realpathWithRetry(filePath).catch(() => filePath))
 
 export const contentHash = (text: string): string =>
   createHash("sha256").update(text).digest("hex")
