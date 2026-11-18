@@ -9,9 +9,7 @@ import { sanitizeNotebookText } from "./notebook-diagnostics.js"
 export interface MaterializedCell {
   readonly cellIndex: number
   readonly cellType: string
-  /** First line in the materialized file, 1-based and inclusive. */
   readonly startLine: number
-  /** Last line in the materialized file, 1-based and inclusive. */
   readonly endLine: number
 }
 
@@ -21,10 +19,6 @@ export interface MaterializedDocument {
   readonly cells: ReadonlyArray<MaterializedCell>
 }
 
-// The sidecar lives next to the notebook, not in a session-level cache:
-// pyright resolves sibling imports relative to the analyzed file's directory.
-// A visible (non-dot) filename is required because pyright excludes dotfiles
-// by default.
 const SIDECAR_PREFIX = "opencode-ipynb-lsp-"
 const LEGACY_DIRECTORY = ".opencode/ipynb-lsp"
 const LEGACY_FILE = /\.[0-9a-f]{16}\.py$/
@@ -54,7 +48,6 @@ const hashFor = (filePath: string): string =>
 const fileNameFor = (filePath: string): string =>
   `${SIDECAR_PREFIX}${hashFor(filePath)}.py`
 
-/** Path of the materialized sidecar for a notebook. */
 export const materializedPath = (filePath: string, root?: string): string => {
   const realFile = realPath(filePath)
   if (root !== undefined) {
@@ -67,23 +60,15 @@ export const materializedPath = (filePath: string, root?: string): string => {
   }
   const lexicalDir = path.dirname(path.resolve(filePath))
   const realDir = path.dirname(realFile)
-  // If the lexical directory is a symlinked session root, keep the lexical
-  // path: the external lsp tool checks `within(root, file)` lexically before
-  // resolving. Otherwise (a symlinked notebook file) use the real directory
-  // so pyright can resolve sibling imports.
   try {
     if (fs.realpathSync(lexicalDir) === realDir) {
       return path.join(lexicalDir, fileNameFor(filePath))
     }
   } catch {
-    // fall through to the real directory
   }
   return path.join(realDir, fileNameFor(filePath))
 }
 
-// Files created by this process, scoped by the worktree used to materialize
-// them. Unloading one project must not untrack another project's sidecar; old
-// files from a crashed process are overwritten by the next materialize.
 const activeSidecars = new Map<string, Set<string>>()
 
 const writeSidecar = async (
@@ -108,9 +93,6 @@ const writeSidecar = async (
     if (existing?.isDirectory()) {
       throw new Error(`Refusing to replace a directory: ${safeTarget}`)
     }
-    // Rename is atomic on POSIX and replaces the target. A pre-existing
-    // symlink is replaced, never followed. The Windows fallback keeps a
-    // backup instead of deleting the original first.
     await replaceFile(temp, safeTarget)
   } catch (error) {
     await fsp.rm(temp, { force: true }).catch(() => {})
@@ -155,16 +137,6 @@ const cleanupLegacyDirectory = async (rootReal: string): Promise<void> => {
   await fsp.rmdir(path.dirname(real)).catch(() => {})
 }
 
-/**
- * Write the notebook's virtual Python document beside the notebook so an
- * external LSP plugin can open it with its own `lsp` tool. The path must stay
- * inside the session/worktree (opencode-v2-lsp-support rejects paths outside
- * its root), and living next to the notebook lets pyright resolve sibling
- * imports exactly like the notebook itself.
- *
- * IPython magics are blanked exactly like the diagnostics path, preserving
- * line/column positions so hover and definitions still map to cells.
- */
 export const materializeVirtualDocument = async (
   document: NotebookVirtualDocument,
   worktree: string
@@ -183,10 +155,6 @@ export const materializeVirtualDocument = async (
   }
 }
 
-/**
- * Refresh an already materialized document after an edit. Does nothing until
- * the notebook has been materialized at least once.
- */
 export const refreshMaterializedDocument = async (
   document: NotebookVirtualDocument,
   worktree: string
@@ -199,7 +167,6 @@ export const refreshMaterializedDocument = async (
   return true
 }
 
-/** True when this notebook already has a materialized sidecar. */
 export const hasMaterializedDocument = async (
   worktree: string,
   filePath: string
@@ -215,7 +182,6 @@ export const hasMaterializedDocument = async (
   return stat !== undefined
 }
 
-/** Remove only this plugin's materialized documents. */
 export const cleanupVirtualDocuments = async (worktree: string): Promise<void> => {
   const rootReal = await fsp.realpath(worktree).catch(() => undefined)
   if (rootReal === undefined) return
@@ -223,8 +189,6 @@ export const cleanupVirtualDocuments = async (worktree: string): Promise<void> =
   if (tracked !== undefined) {
     await Promise.all(
       [...tracked].map(async (file) => {
-        // Resolve the parent immediately before removing: a directory can be
-        // replaced by a symlink after materialization, and rm would follow it.
         const parentReal = await fsp
           .realpath(path.dirname(file))
           .catch(() => undefined)

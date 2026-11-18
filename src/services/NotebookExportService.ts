@@ -259,8 +259,6 @@ const makeExportImpl = (
                 : code.outputs.filter((out) => detectOutputKind(out) === "error")
               const section = formatOutputs({ ...code, outputs }, {
                 includeImages: false,
-                // File exports are meant to be complete; maxExportChars only
-                // caps the text returned to the model.
                 maxOutputChars: Number.MAX_SAFE_INTEGER,
                 maxTracebackChars: Number.MAX_SAFE_INTEGER
               })
@@ -302,7 +300,6 @@ const makeExportImpl = (
         const outputReal = yield* Effect.promise(() => realTarget(outAbs))
         const isNotebookName = (value: string): boolean => {
           let base = path.basename(value).toLowerCase()
-          // Windows strips trailing dots/spaces, so "n.ipynb " is "n.ipynb".
           if (process.platform === "win32") base = base.replace(/[ .]+$/, "")
           return base.endsWith(".ipynb")
         }
@@ -319,8 +316,6 @@ const makeExportImpl = (
             issues: ["refusing to write an export over a .ipynb file"]
           })
         }
-        // Pin the resolved destination: a symlink swapped during the
-        // permission prompt must not redirect the write to a new target.
         const writeTarget = outputReal
         const lexicalPaths = yield* permSvc.aliases(outAbs)
         const pinnedPaths = yield* permSvc.aliases(writeTarget)
@@ -340,7 +335,6 @@ const makeExportImpl = (
             length: rendered.length
           }
         })
-        // The tool output is capped, but a file export must be complete.
         yield* pathSvc.writeFileSafe(writeTarget, rendered, {
           noFollowFinal: true
         })

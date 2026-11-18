@@ -9,7 +9,6 @@ export const DEFAULT_INSPECT_PREVIEW_CHARS = 240
 export const MAX_NOTEBOOK_BYTES = 50 * 1024 * 1024
 export const MAX_READ_CELLS = 500
 
-/** Hard caps that protect the host context from pathological notebooks. */
 export const MAX_INSPECT_CELLS = 1_000
 export const MAX_METADATA_CHARS = 20_000
 export const MAX_RUN_RESPONSE_CHARS = 120_000

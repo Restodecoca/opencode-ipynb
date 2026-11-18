@@ -167,8 +167,6 @@ export const makeReadImpl = (
       }),
     readRange: (filePath, start, end, options) =>
       Effect.gen(function* () {
-        // Clamp before allocating: a model-supplied end of 50_000_000 must
-        // not build a 50-million-element array.
         const { abs, notebook } = yield* loadNotebook(filePath)
         const lo = Math.max(0, Math.min(start, end))
         if (lo >= notebook.cells.length) {

@@ -52,9 +52,7 @@ export interface NotebookServices {
   readonly file: NotebookFileServiceShape
   readonly python: PythonServiceShape
   readonly kernel: KernelManagerShape
-  /** Interpreter selected from plugin options/env, when configured. */
   readonly pythonPath: string | undefined
-  /** Invalid pythonPath configuration, surfaced by Python-dependent tools. */
   readonly pythonPathError: string | undefined
   readonly inspect: ReturnType<typeof makeInspectImpl>
   readonly read: NotebookReadServiceShape
@@ -86,10 +84,6 @@ const getOrCreatePythonService = (opts: {
   return service
 }
 
-// Module-level registry for the kernel managers. The plugin needs the same
-// instance across all tool invocations to share running kernels. Managers are
-// grouped by plugin instance (location) and keyed by runtime configuration, so
-// unloading one project cannot kill another project's kernels.
 const defaultKernelScope = {}
 const sharedKernelManagers = new Map<object, Map<string, KernelManagerShape>>()
 
@@ -230,8 +224,6 @@ const resolveOptionsFromEnv = (instanceOptions?: unknown): PluginOptions => {
       cachedEnvOptions = { raw, value: safe.data }
       return safe.data
     } catch {
-      // Do not cache an instance-specific fallback under the global raw key:
-      // another project with different instance options would inherit it.
       return instanceOptions !== undefined && instanceOptions !== null
         ? parseResolvedOptions(instanceOptions)
         : parsePluginOptions({})

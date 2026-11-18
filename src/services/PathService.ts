@@ -104,9 +104,6 @@ const buildPathService = (env: PathEnv): PathServiceShape => {
           const worktreeReal = await fs.promises
             .realpath(worktreeResolved)
             .catch(() => worktreeResolved)
-          // Walk up to the deepest existing component. This catches symlinked
-          // ancestors and dangling symlink targets that realpath(absPath)
-          // alone cannot resolve.
           const assertPath = async (candidate: string, depth = 0): Promise<void> => {
             if (depth > 64) {
               throw outsideError(absPath, "path has too many symlink levels")
@@ -230,10 +227,6 @@ const buildPathService = (env: PathEnv): PathServiceShape => {
 
           const root = await fsp.realpath(worktreeResolved).catch(() => worktreeResolved)
           const parent = path.dirname(absPath)
-          // Check the deepest existing ancestor before mkdir so an outside
-          // symlink cannot create directories outside the worktree as a side
-          // effect. This also accepts a lexical session path whose real target
-          // is inside the worktree.
           let probe = absPath
           let ancestorReal: string | undefined
           for (let depth = 0; depth < 128; depth += 1) {

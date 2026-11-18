@@ -1,8 +1,3 @@
-/**
- * Pure helpers for the notebook `execute.after` hook. Keeping the tool-name
- * normalization and changed/no-op rules here makes the plugin entrypoint
- * mostly lifecycle wiring and gives the tests a small unit to target.
- */
 
 export const notebookMutatingTools = new Set([
   "ipynb_edit",

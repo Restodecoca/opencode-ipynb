@@ -32,11 +32,6 @@ export const toolDefinitions: Record<string, AnyToolDefinition> = {
   ipynb_lsp: ipynbLspTool
 }
 
-// The permission name declared on a V2 tool is matched against the user's
-// permission rules. Mutating tools map to "edit"; execution maps to "shell";
-// the mixed LSP tool maps to "lsp" (its materialize branch additionally asks
-// for edit on the sidecar path). Per-call approval still goes through
-// ctx.permission.assert.
 export const permissionByTool: Record<string, string> = {
   ipynb_inspect: "read",
   ipynb_read: "read",

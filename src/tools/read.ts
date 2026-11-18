@@ -59,7 +59,6 @@ const readArgsSchema = z.object(args).superRefine((input, ctx) => {
     return
   }
   if (hasCell) return
-  // Range mode: both start and end must be present and start <= end.
   if (!hasStart || !hasEnd) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -100,8 +99,6 @@ export const ipynbReadTool = tool({
       const pluginOpts = resolveToolOptions(context)
       const requestOptions = {
         ...input,
-        // Requesting images implies reading outputs; otherwise there is
-        // nothing to attach.
         includeOutputs: input.includeOutputs || input.includeImages,
         saveImages: input.includeImages,
         maxOutputChars: input.maxOutputChars ?? pluginOpts.defaultMaxOutputChars

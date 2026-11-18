@@ -13,19 +13,12 @@ const HELPER_ENV_KEYS = [
   "PYTHONINSPECT"
 ] as const
 
-/**
- * Environment for the Python helper process. The helper runs first-party
- * code and imports stdlib/nbclient modules before it can trust the request,
- * so project-controlled PYTHONPATH/PYTHONHOME values must not reach it.
- * Notebook kernels get the original values back through `kernelEnv`.
- */
 export const helperSpawnEnv = (): NodeJS.ProcessEnv => {
   const env = { ...process.env }
   for (const key of HELPER_ENV_KEYS) delete env[key]
   return env
 }
 
-/** Original Python env values to restore only inside the notebook kernel. */
 export const kernelEnvOverrides = (): Record<string, string> | undefined => {
   const out: Record<string, string> = {}
   for (const key of HELPER_ENV_KEYS) {
@@ -74,7 +67,6 @@ export interface PythonServiceShape {
     pythonPath: string,
     module: string
   ) => Effect.Effect<DependencyCheck, never>
-  /** Batch variant: one Python process for many imports. */
   readonly checkImports?: (
     pythonPath: string,
     modules: ReadonlyArray<string>,
@@ -88,9 +80,6 @@ export interface PythonServiceShape {
   ) => Effect.Effect<PythonDoctor, PermissionDeniedError>
 }
 
-// Test-only surface: cache invalidation is an implementation detail of the
-// dependency check, and consumers should not depend on it. Underscore prefix
-// follows the same convention as Python's "private by convention".
 export interface _PythonServiceForTest {
   readonly _invalidateDepsCache: (pythonPath?: string) => void
 }
@@ -101,8 +90,6 @@ const REQUIRED_DEPS = ["nbformat", "nbclient", "jupyter_client", "ipykernel"] as
 
 const probeEnv = (): NodeJS.ProcessEnv => {
   const env = { ...process.env }
-  // Isolated probes must not execute project-local modules through
-  // PYTHONPATH or the current directory.
   delete env.PYTHONPATH
   delete env.PYTHONHOME
   return env
@@ -383,10 +370,6 @@ print(json.dumps(out))`
 
 const IMPORTS_BATCH_SIZE = 128
 
-/**
- * Check many imports without exceeding platform environment/argv limits.
- * Roots are deduplicated and sent in bounded chunks, preserving input order.
- */
 const checkImportsBatch = async (
   pythonPath: string,
   modules: ReadonlyArray<string>,
@@ -403,8 +386,6 @@ const checkImportsBatch = async (
     }))
   checks.push(...tooLong)
   const usable = roots.filter((name) => name.length <= 256)
-  // Windows caps the whole environment block at 32767 chars; stay well
-  // below it because inherited variables also count.
   const envBudget = process.platform === "win32" ? 16_000 : 60_000
   const chunks: string[][] = []
   let current: string[] = []
@@ -451,11 +432,6 @@ const checkImportsBatch = async (
   )
 }
 
-/**
- * Absolute PATH candidates for the Python names the plugin probes. Resolving
- * them without executing lets the first shell assert cover the interpreter a
- * PATH lookup will actually spawn.
- */
 export const pythonInterpreterResources = (
   configured?: string
 ): ReadonlyArray<string> => {
@@ -475,18 +451,13 @@ export const pythonInterpreterResources = (
     try {
       out.add(fs.realpathSync(candidate))
     } catch {
-      // missing / dangling
     }
     return true
   }
   if (configured !== undefined && configured.length > 0) {
-    // An explicit interpreter wins: do not enumerate unused PATH Python
-    // installations or a deny on one of them blocks a safe configuration.
     if (path.isAbsolute(configured)) {
       add(configured)
     } else {
-      // A bare name is resolved through PATH; assert the absolute target,
-      // not just the literal string. Windows shims usually carry .exe.
       const configuredNames =
         process.platform === "win32" && !configured.endsWith(".exe")
           ? [configured, `${configured}.exe`]
@@ -499,16 +470,12 @@ export const pythonInterpreterResources = (
             fs.accessSync(candidate, fs.constants.X_OK)
             if (add(candidate)) break outer
           } catch {
-            // keep looking
           }
         }
       }
     }
     return [...out]
   }
-  // The probe tries `python` first and only falls back to `python3` when it
-  // is absent. Asserting both up front over-blocks when the unused fallback
-  // is denied, so include only the first name that resolves.
   for (const name of names) {
     let found = false
     for (const dir of dirs) {
@@ -521,7 +488,6 @@ export const pythonInterpreterResources = (
           break
         }
       } catch {
-        // not executable / missing
       }
     }
     if (found) break
@@ -529,7 +495,6 @@ export const pythonInterpreterResources = (
   return [...out]
 }
 
-/** Back-compat: realpath-resolved PATH candidates only. */
 export const pathPythonCandidates = (): ReadonlyArray<string> =>
   pythonInterpreterResources().filter((value) => {
     try {
@@ -549,7 +514,6 @@ const findHelper = (rel: string): string | undefined => {
     candidates.push(rel)
   } else {
     const distDir = path.dirname(__filename)
-    // dist/index.js -> package root; src/services/*.ts -> repository root.
     candidates.push(
       path.basename(distDir) === "dist"
         ? path.resolve(distDir, "..", rel)
@@ -559,10 +523,6 @@ const findHelper = (rel: string): string | undefined => {
   for (const c of candidates) {
     if (fs.existsSync(c)) return c
   }
-  // Log the candidates we tried so debugging layout issues is easier.
-  // Project has no logging service yet; console.warn is the only signal
-  // that survives in production. Deduped: chained tool calls would
-  // otherwise spam the same warning on every invocation.
   if (!findHelperWarned) {
     findHelperWarned = true
     console.warn(
@@ -648,8 +608,6 @@ const makePythonImpl = (
         specs.map((spec) => probeWithFrom(spec.executable, spec.from))
       )
     ).filter((item): item is PythonProbeResult => item !== null)
-    // The configured interpreter can also be the first `python` on PATH.
-    // Keep the higher-priority source and avoid duplicate doctor entries.
     const seen = new Set<string>()
     return list.filter((item) => {
       const key = path.resolve(item.executable)
@@ -659,9 +617,6 @@ const makePythonImpl = (
     })
   }
 
-  // Probe cache: finding an interpreter spawns up to four subprocesses.
-  // A short TTL keeps repeated tool calls cheap without hiding a newly
-  // installed Python forever.
   const PROBE_TTL_MS = 60_000
   let candidatesCheckedAt = 0
   let probed = false
@@ -672,8 +627,6 @@ const makePythonImpl = (
   const probe = (): Effect.Effect<PythonProbeResult, never> =>
     Effect.gen(function* () {
       const now = Date.now()
-      // Fresh candidates (doctor/allCandidates) win over a previously cached
-      // probe, so a newly installed interpreter is picked up immediately.
       if (
         probed &&
         candidates.length > 0 &&
@@ -720,9 +673,6 @@ const makePythonImpl = (
       return candidates
     })
 
-  // Dependency-check cache: `checkDependencies` spawns 4 Python subprocesses per
-  // call, so without this a 200ms notebook run would pay >=1s of dep-probe
-  // overhead on every `ipynb_run`. Keyed by pythonPath, with a 60s TTL.
   const DEPS_TTL_MS = 60_000
   interface DepsCacheEntry {
     readonly checkedAt: number

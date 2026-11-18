@@ -33,13 +33,6 @@ const documentSchema = {
   additionalProperties: false
 } as const
 
-/**
- * Public RPC contract for notebook/LSP integration.
- *
- * Other plugins can import this contract from `opencode-ipynb/rpc`, call
- * `document` to get a provider-agnostic virtual document, and subscribe to
- * `changed` to refresh diagnostics after the plugin edits a notebook.
- */
 export const NotebookRpc = {
   id: "opencode-ipynb",
   methods: {

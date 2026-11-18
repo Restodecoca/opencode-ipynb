@@ -35,12 +35,6 @@ import {
 const plugin: Plugin.Plugin = {
   id: "opencode-ipynb",
   async setup(context) {
-    // V2 passes per-plugin-instance options through setup. The adapter puts
-    // them on the tool context instead of process.env, so multiple projects
-    // in one OpenCode server cannot leak settings into each other. Explicit
-    // env vars still take precedence when options are resolved.
-    // Validate and normalize options once per plugin instance. Invalid
-    // options fail setup instead of being silently ignored at tool time.
     const options = parsePluginOptions(context.options)
     const effectiveOptions = resolveOptionsFromEnv(options)
     const registration = await registerV2Tools(
@@ -90,8 +84,6 @@ const plugin: Plugin.Plugin = {
       if (!changedNotebook(event.tool, event.input, event.result?.metadata)) return
       const filePath = (event.input as { filePath?: unknown } | undefined)?.filePath
       if (typeof filePath !== "string") return
-      // RPC invalidation is fire-and-forget. Diagnostics below are awaited
-      // on purpose so the agent sees errors in the same tool result.
       void rpcRegistration.events.emit("changed", { filePath }).catch(() => {})
 
       const name = toolName(event.tool)
@@ -136,8 +128,6 @@ const plugin: Plugin.Plugin = {
           await refreshMaterializedDocument(document, context.location.directory)
         }
       } catch (error) {
-        // Refreshing the sidecar is best-effort, but a stale navigation file
-        // is user-visible: report it in the same tool result.
         const result = event.result as MutableResult | undefined
         if (result) {
           const message =
@@ -192,7 +182,6 @@ const plugin: Plugin.Plugin = {
           permissionDenied = true
           throw error
         }
-        // Only spawn pyright after the host approved the lsp action.
         if (
           !(await isPyrightAvailable(
             effectiveOptions.pyrightPath,
@@ -281,9 +270,6 @@ const plugin: Plugin.Plugin = {
           }
         }
       } catch {
-        // Diagnostics are best-effort; a broken pyright or denied permission
-        // must not fail the edit. Make a denial visible instead of silently
-        // pretending the notebook was checked.
         if (permissionDenied) {
           const result = event.result as MutableResult | undefined
           if (result) {
@@ -312,8 +298,6 @@ const plugin: Plugin.Plugin = {
               (warning.detail === undefined ? "" : ` (${warning.detail})`)
           )
         }
-        // Kill every live warm kernel even when a plugin contribution fails
-        // to dispose. A sidecar cleanup error must not leak Python processes.
         await disposeSharedKernelManager(context)
       }
     }

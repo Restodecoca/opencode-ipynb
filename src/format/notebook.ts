@@ -3,7 +3,6 @@ import { codeFence } from "../utils/fence.js"
 export interface MarkdownCellInput {
   readonly cell_type: "code" | "markdown" | "raw"
   readonly source: string
-  /** Rendered image links appended after a raw-cell fence. */
   readonly attachments?: ReadonlyArray<string> | undefined
 }
 

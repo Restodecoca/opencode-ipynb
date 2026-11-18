@@ -10,15 +10,9 @@ export interface LoadDocumentContext {
   readonly worktree: string
   readonly allowOutsideWorktree?: boolean
   readonly options: PluginOptions
-  /** Materialization/RPC do not need a Python interpreter. */
   readonly resolvePython?: boolean
 }
 
-/**
- * Resolve, confine, read, and project a notebook onto its virtual Python
- * document. Shared by the RPC hook and ipynb_lsp so both use exactly the same
- * real-path and option rules.
- */
 export const loadNotebookDocument = async (
   context: LoadDocumentContext,
   filePath: string
@@ -44,8 +38,6 @@ export const loadNotebookDocument = async (
     try {
       pythonPath = resolvePythonPath(context.options)
     } catch {
-      // Materialization/RPC/automatic diagnostics must keep working when the
-      // configured interpreter is missing; include it only when resolvable.
       pythonPath = undefined
     }
   }

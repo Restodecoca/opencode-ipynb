@@ -4,11 +4,6 @@ import * as path from "node:path"
 import type { ToolContext } from "../tool.js"
 import { PermissionDeniedError } from "../domain/errors.js"
 
-/**
- * Permission resources for a write target: the lexical path the caller used
- * and, when it differs, the real path that will actually be written. A rule
- * that denies the real notebook must not be bypassed through a symlink alias.
- */
 const inside = (root: string, target: string): boolean => {
   const relative = path.relative(root, target)
   return (
@@ -52,9 +47,6 @@ export const permissionAliases = async (
   }
   addWithSlashes(absolute)
   if (resolved !== absolute) addWithSlashes(resolved)
-  // OpenCode matches native read/edit resources as location-relative paths.
-  // Include relative aliases from both the session directory and worktree so
-  // rules such as "secrets/*" or "notebooks/foo.ipynb" also apply here.
   for (const root of bases) {
     const roots = new Set<string>([path.resolve(root)])
     const realRoot = await fsp.realpath(root).catch(() => undefined)

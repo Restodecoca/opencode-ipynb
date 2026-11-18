@@ -31,12 +31,9 @@ export interface NotebookDiagnosticsOptions {
   readonly filePath: string
   readonly document: NotebookVirtualDocument
   readonly displayPath?: string
-  /** Heading used in the report; defaults to displayPath. */
   readonly where?: string
   readonly tempFilePath?: string
-  /** True when the plugin owns the temp file and may reuse/truncate it. */
   readonly ownedTempFile?: boolean
-  /** Ask the host for permission before writing the system-temp fallback. */
   readonly requestFallbackPermission?: () => Promise<void>
   readonly pythonPath?: string
   readonly pyrightPath?: string
@@ -58,7 +55,6 @@ export interface NotebookDiagnosticsResult {
     | "pyright-not-executable"
 }
 
-/** Marker for temp-file failures so they are not confused with pyright spawn. */
 class TempFileError extends Error {}
 
 interface PyrightDiagnostic {
@@ -91,13 +87,6 @@ const PYTHON_CELL_MAGICS = new Set([
   "py"
 ])
 
-/**
- * IPython magics and shell escapes are not valid Python. Blank them while
- * preserving line and column positions so diagnostics on other lines stay
- * correctly mapped. Python-bodied cell magics (`%%time`, `%%capture`, ...)
- * keep their body; non-Python cell magics (`%%bash`, `%%html`, ...) blank the
- * whole cell.
- */
 export const sanitizeNotebookText = (document: NotebookVirtualDocument): string => {
   const lines = document.text.split("\n")
   for (const cell of document.cells) {
@@ -116,17 +105,11 @@ export const sanitizeNotebookText = (document: NotebookVirtualDocument): string 
         /^\s*[%!]/.test(current) ||
         /^\s*[^=#]+=\s*[%!]/.test(current)
       ) {
-        // A non-Python cell magic body has no Python suite structure, so a
-        // column-0 `pass` is the only safe replacement. Line magics inside a
-        // Python suite keep their indentation.
         lines[line] = blankWhole
           ? "pass".padEnd(current.length, " ")
           : replaceWithPass(current)
         continue
       }
-      // IPython help prefixes/suffixes (`?df.head`, `??df.head`,
-      // `df.head?`) are not valid Python. Replace the whole line with
-      // `pass` at the same indentation so suites stay valid.
       const code = stripPythonComment(current)
       if (
         /^(\s*)\?{1,2}/.test(code) ||
@@ -159,9 +142,6 @@ const runPyright = (
       return
     }
     const detached = process.platform !== "win32"
-    // On Windows, .cmd shims require cmd.exe. Build a quoted command line
-    // instead of passing shell:true with unescaped argv (Node concatenates
-    // those verbatim, so a notebook path containing `&` could inject).
     let spawnCommand = command
     let spawnArgs: string[] = [...args]
     let useShell = shell
@@ -209,9 +189,6 @@ const runPyright = (
         aborted
       })
     }
-    // Kill the whole process group. pyright may be a launcher that spawns a
-    // child which inherits stdout; killing only the parent leaves `close`
-    // pending until that grandchild exits.
     const killTree = () => {
       if (child.pid === undefined) return
       if (process.platform === "win32") {
@@ -234,15 +211,11 @@ const runPyright = (
     }
     signal?.addEventListener("abort", onAbort, { once: true })
     child.stdout.on("data", (chunk: Buffer) => {
-      // Bound memory by bytes and decode through a stateful decoder so a
-      // multi-byte character split across chunks is not corrupted.
       if (stdoutBytes >= 8 * 1024 * 1024) return
       const take = chunk.subarray(0, 8 * 1024 * 1024 - stdoutBytes)
       stdoutBytes += take.length
       stdout += decoder.write(take)
     })
-    // Drain stderr so a chatty/failing pyright cannot fill the pipe and
-    // hang until the timeout. Keep only a bounded prefix for diagnostics.
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderrBytes >= 4_000) return
       const take = chunk.subarray(0, 4_000 - stderrBytes)
@@ -254,8 +227,6 @@ const runPyright = (
       signal?.removeEventListener("abort", onAbort)
       reject(error)
     })
-    // `exit` fires even when a grandchild keeps the stdio pipe open. Give the
-    // pipe a short drain window, then settle regardless.
     child.on("exit", (code) => {
       exitCode = code
       setTimeout(finish, 50)
@@ -312,7 +283,6 @@ const findOnPath = (name: string): string | undefined => {
         }
         return candidate
       } catch {
-        // keep looking
       }
     }
   }
@@ -333,9 +303,6 @@ export const resolvePyrightCommand = (
       "pyrightPath must be absolute or a bare command name resolved through PATH"
     )
   }
-  // Resolve bare names to an absolute PATH entry so cmd.exe never searches
-  // the notebook/project cwd on Windows. If not found, do not fall back to a
-  // bare .cmd name with shell:true.
   const resolved = path.isAbsolute(requested)
     ? requested
     : findOnPath(defaultName ? "pyright" : requested)
@@ -357,11 +324,6 @@ export const resolvePyrightCommand = (
 const pyrightAvailability = new Map<string, { at: number; ok: boolean }>()
 const PYRIGHT_AVAILABILITY_TTL_MS = 60_000
 
-/**
- * Cheap availability check used before asking permission or creating a temp
- * file. Absolute paths are checked without spawning; a bare command is probed
- * once per TTL. This avoids permission prompts when pyright is not installed.
- */
 export const isPyrightAvailable = async (
   configured: string | undefined,
   timeoutMs = 5_000,
@@ -404,8 +366,6 @@ export const isPyrightAvailable = async (
       shell
     )
     ok = outcome.code === 0 && !outcome.timedOut && !outcome.aborted
-    // A timeout/abort says nothing about availability; do not suppress
-    // diagnostics for a full TTL because of a transient interruption.
     if (outcome.timedOut || outcome.aborted) cacheable = false
   } catch {
     ok = false
@@ -419,15 +379,10 @@ const diagnosticHash = (filePath: string): string => {
   try {
     real = realpathSync(filePath)
   } catch {
-    // Newly created notebooks still need a stable identity.
   }
   return createHash("sha256").update(real).digest("hex").slice(0, 16)
 }
 
- /**
- * A stable temp path keeps an "always allow" edit grant meaningful. The
- * content is rewritten on each run and removed afterwards.
- */
 const realFilePath = (filePath: string): string => {
   try {
     return realpathSync(filePath)
@@ -442,7 +397,6 @@ export const diagnosticTempPath = (filePath: string): string =>
     `opencode-ipynb-diag-${diagnosticHash(filePath)}.py`
   )
 
-/** Fallback used when the notebook directory is not writable. */
 export const diagnosticFallbackTempPath = (filePath: string): string =>
   path.join(
     os.tmpdir(),
@@ -519,18 +473,11 @@ const endsWithOpenConstruct = (source: string): boolean => {
   return last.endsWith(":") || last.endsWith("\\") || /[([{]$/.test(last)
 }
 
-/**
- * A syntax error caused by an incomplete construct in one cell is often
- * reported at the first line of the next cell. Map that boundary error back
- * when the previous cell clearly ends with an open construct.
- */
 const remapCellBoundary = (
   document: NotebookVirtualDocument,
   position: { cellIndex: number; line: number; character: number },
   rule?: string
 ): { cellIndex: number; line: number; character: number } => {
-  // Pyright syntax errors have no rule; semantic diagnostics must stay in
-  // the cell where they were reported.
   if (rule !== undefined) return position
   if (
     position.line !== 0 ||
@@ -573,8 +520,6 @@ export const diagnoseNotebook = async (
     }
     const openTemp = async (file: string): Promise<void> => {
       if (!owned) {
-        // A caller-supplied path is never truncated or deleted: fail if it
-        // already exists, and only clean up a file we created ourselves.
         const existing = await fsp.lstat(file).catch(() => undefined)
         if (existing !== undefined) {
           throw new Error(`refusing to overwrite caller-supplied temp file: ${file}`)
@@ -602,8 +547,6 @@ export const diagnoseNotebook = async (
         throw new TempFileError(`refusing to open a hardlinked temp file at ${file}`)
       }
       if (existing !== undefined) {
-        // A predictable temp path on a shared /tmp must not be attacker-owned
-        // or world/group-readable, or notebook source could be disclosed.
         const uid = typeof process.getuid === "function" ? process.getuid() : undefined
         if (uid !== undefined && existing.uid !== uid) {
           throw new TempFileError(`refusing a temp file owned by another user: ${file}`)
@@ -640,8 +583,6 @@ export const diagnoseNotebook = async (
           await handle.close().catch(() => {})
           throw new TempFileError(`refusing a temp file with unsafe ownership/mode: ${file}`)
         }
-        // Truncate only after fstat proved nlink === 1; O_TRUNC before the
-        // check would already have damaged a swapped-in hardlink victim.
         await handle.truncate(0)
         await handle.writeFile(text, "utf8")
       } catch (error) {
@@ -667,8 +608,6 @@ export const diagnoseNotebook = async (
             error instanceof Error ? error.message : String(error)
           )
         }
-        // Read-only notebook directory: fall back to the system temp dir.
-        // Imports may be less accurate, but syntax/type errors still work.
         if (options.requestFallbackPermission !== undefined) {
           await options.requestFallbackPermission()
         }
@@ -720,9 +659,6 @@ export const diagnoseNotebook = async (
       if (outcome.timedOut) {
         return { filePath, diagnostics: [], text: "", skipped: "timeout" }
       }
-      // Pyright uses 0 = clean, 1 = type errors, >=2 = fatal/configuration
-      // failure. Fatal exits can still print valid JSON with an empty
-      // diagnostics array; never report that as a clean notebook.
       if (outcome.code !== null && outcome.code > 1) {
         return { filePath, diagnostics: [], text: "", skipped: "invalid-output" }
       }
@@ -734,8 +670,6 @@ export const diagnoseNotebook = async (
       }
       const analyzed = parsed.summary?.filesAnalyzed
       if (typeof analyzed === "number" && analyzed === 0) {
-        // A pyright exclude/config can silently skip the sidecar. That is
-        // not a clean notebook.
         return { filePath, diagnostics: [], text: "", skipped: "not-analyzed" }
       }
       if (process.env.OPENCODE_IPYNB_DIAG_DEBUG === "1") {
@@ -783,8 +717,6 @@ export const diagnoseNotebook = async (
           ...(item.rule === undefined ? {} : { rule: item.rule.slice(0, 200) })
         })
       }
-      // Pyright can exit 0 and still warn that the configuration was
-      // rejected. An empty diagnostics list then does not mean clean.
       if (
         diagnostics.length === 0 &&
         /config[\s\S]{0,120}(error|must|invalid|unrecognized|unsupported)/i.test(
@@ -816,7 +748,6 @@ export const diagnoseNotebook = async (
                 : "invalid-output"
       }
     } finally {
-      // Never delete a caller-supplied path that we did not create.
       if (wroteTemp) await fsp.rm(tempFile, { force: true }).catch(() => {})
     }
   })

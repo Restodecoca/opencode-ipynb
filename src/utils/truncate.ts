@@ -44,9 +44,6 @@ export const truncate = (text: string, maxChars: number, hint: TruncateHint = "t
   const suffix = buildSuffix(hint, maxChars)
   const budget = Math.max(0, maxChars - suffix.length)
   if (budget === 0) {
-    // The hint alone is at least as long as the budget. Drop the original
-    // text so the user still sees a "truncated" indicator instead of
-    // silently returning a result that exceeds `maxChars`.
     return {
       text: suffix,
       truncated: true,
@@ -69,8 +66,6 @@ export const truncatePreview = (text: string, maxChars: number): string => {
   if (text.length <= maxChars) {
     return text
   }
-  // 16 chars is the length of the literal suffix "\n... (truncated)" so that the
-  // returned preview never exceeds `maxChars` even for very small budgets.
   return text.slice(0, Math.max(0, maxChars - 16)) + "\n... (truncated)"
 }
 

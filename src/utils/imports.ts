@@ -27,16 +27,8 @@ const stripComment = (line: string): string => line.replace(/#.*$/, "")
 const TRIPLE_DOUBLE = /"""[\s\S]*?"""/g
 const TRIPLE_SINGLE = /'''[\s\S]*?'''/g
 
-/**
- * Extract the top-level modules imported by Python source. For
- * `from pandas import DataFrame` the module is `pandas`, not `DataFrame`.
- * This is intentionally a lightweight parser (not a Python AST); it handles
- * aliases, comments, dotted modules, and parenthesized from-imports.
- */
 export const extractImportNames = (source: string): string[] => {
   const names: string[] = []
-  // Strip triple-quoted bodies first; the line parser below never scans past
-  // a single line, so blank/whitespace-heavy notebooks stay linear.
   const withoutCommentLines = source.replace(/^[ \t]*#[^\n]*$/gm, "")
   const withoutStrings = withoutCommentLines
     .replace(TRIPLE_DOUBLE, "")

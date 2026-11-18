@@ -12,9 +12,6 @@ import {
 import { helperSpawnEnv } from "./PythonService.js"
 import { MAX_HELPER_STDOUT_BYTES } from "../utils/limits.js"
 
-// ---------------------------------------------------------------------------
-// KernelManager: long-lived Python subprocess per notebook path.
-// ---------------------------------------------------------------------------
 
 export interface KernelManagerOptions {
   readonly pythonPath: string
@@ -78,9 +75,6 @@ interface Deferred<A, E> {
   readonly reject: (e: E) => void
 }
 
-// Minimal deferred (resolve/reject are always assigned synchronously in the
-// executor). Equivalent to Promise.withResolvers but typed against a custom
-// error type without resorting to ``unknown``.
 const createDeferred = <A, E>(): Deferred<A, E> => {
   let resolve!: (a: A) => void
   let reject!: (e: E) => void
@@ -91,10 +85,6 @@ const createDeferred = <A, E>(): Deferred<A, E> => {
   return { promise, resolve, reject }
 }
 
-// Sentinel resolved to the pending shutdown handler when the kernel exits
-// cleanly. The shutdown call site ignores the value (`sendShutdown` always
-// resolves its outer promise), so the only requirement is that it satisfies
-// the RunResponse type. Keep it minimal: zero cells, zero duration.
 const EMPTY_SHUTDOWN_RESPONSE = {
   success: true,
   executedCells: [] as ReadonlyArray<number>,
@@ -117,7 +107,6 @@ const killPidTree = (
     try {
       process.kill(pid, signal)
     } catch {
-      // already gone
     }
   }
 }
@@ -139,7 +128,6 @@ const killProcessTree = (
     try {
       proc.kill(signal)
     } catch {
-      // proc may already be dead; ignore.
     }
   }
 }
@@ -259,14 +247,8 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         stdio: ["pipe", "pipe", "pipe"]
       }
     )
-    // Swallow EPIPE on stdin; without a listener a helper that exits during
-    // startup would emit an uncaught stream error. Pending requests are
-    // failed by the close/error handlers below.
     proc.stdin?.on("error", () => {})
     const startedAt = Date.now()
-    // Build the ready-deferred promise up front so we can store the
-    // resolve/reject closures on the state in one place — no second pass
-    // after construction to wire them up.
     const readyDeferred = createDeferred<void, PythonRunnerError>()
     const state: KernelState = {
       proc,
@@ -365,9 +347,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       handler.resolve(m as unknown as RunResponse)
     }
 
-    // Byte-limited NDJSON reader: do not let readline buffer an unbounded
-    // single response line before the size check.
-    // Chunk list avoids re-copying a growing 48 MB line on every read.
     let pending: Buffer[] = []
     let pendingBytes = 0
     const decoder = new StringDecoder("utf8")
@@ -391,7 +370,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         try {
           proc.kill("SIGKILL")
         } catch {
-          // already gone
         }
         return
       }
@@ -421,13 +399,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
 
     proc.on("close", (code, signal) => {
       state.alive = false
-      // When the kernel exits cleanly (exit 0), there is no failure to
-      // propagate for the shutdown request we sent ourselves; resolve it
-      // immediately so we don't wait for its 2s safety-net timer to fire.
-      // For non-zero or null exit codes, fall back to the standard failure
-      // path. Any other pending request (a real `cell`/`all` call in flight
-      // when the process died) must be failed explicitly so the caller sees
-      // "kernel exited unexpectedly" instead of a bogus `null` response.
       if (code === 0) {
         if (!state.readyResolved) {
           state.readyResolved = true
@@ -573,11 +544,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         timer,
         cleanup: () => handlerCleanup?.()
       })
-      // Guard against a closed/destroyed stdin before writing. The
-      // ``stdin?.write`` form silently no-ops on a missing stream but
-      // emits EPIPE asynchronously when the stream is destroyed; that
-      // becomes an uncaught error and crashes the plugin. Reject the
-      // shutdown request immediately so killKernel can move on.
       const stdin = state.proc.stdin
       if (!stdin || !stdin.writable) {
         clearTimeout(timer)
@@ -588,8 +554,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         resolve()
         return
       }
-      // Attach a one-shot error handler so EPIPE / write-after-close
-      // failures are swallowed instead of crashing the process.
       const onStdinError = (): void => {
         clearTimeout(timer)
         handlerCleanup?.()
@@ -686,9 +650,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       const raw = yield* Effect.tryPromise<RunResponse, PythonRunnerError>({
         try: () =>
           new Promise<RunResponse>((resolve, reject) => {
-            // Give the helper's own cell timeout a grace window first. If the
-            // JS timer still fires, stop the kernel so a timed-out cell does
-            // not keep running and block the next request.
             const timer = setTimeout(() => {
               const handler = state.pending.get(id)
               handler?.cleanup?.()
@@ -741,10 +702,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               options?.signal?.removeEventListener("abort", onAbort)
             try {
               const payload = JSON.stringify({ id, ...request }) + "\n"
-              // Guard against a closed stdin before writing. If the kernel
-              // has already exited, the ``?.write`` form would silently
-              // no-op and the request would sit in ``pending`` until the
-              // timeout fired. Reject immediately with a clear cause.
               const stdin = state.proc.stdin
               if (!stdin || !stdin.writable) {
                 state.pending.delete(id)
@@ -757,9 +714,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
                 )
                 return
               }
-              // One-shot error handler so a destroy-during-write (EPIPE)
-              // is observed on the request and not as an uncaught
-              // stream error that crashes the plugin.
               const onStdinError = (): void => {
                 cleanupStdinError?.()
                 state.pending.delete(id)
@@ -773,10 +727,6 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               }
               stdin.once("error", onStdinError)
               cleanupStdinError = () => stdin.off("error", onStdinError)
-              // ``write`` returns false when the internal buffer is full;
-              // that is normal back-pressure, not an error. The data is
-              // queued and Node will flush it. We only reject on a real
-              // exception.
               stdin.write(payload)
             } catch (err) {
               cleanupStdinError?.()

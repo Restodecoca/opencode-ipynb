@@ -4,7 +4,6 @@ import {
   MAX_DIAGNOSTICS_METADATA_BYTES
 } from "./limits.js"
 
-/** Cap diagnostics metadata by both entry count and serialized bytes. */
 export const capDiagnosticMetadata = (
   diagnostics: ReadonlyArray<NotebookDiagnostic>
 ): ReadonlyArray<NotebookDiagnostic> => {

@@ -17,7 +17,6 @@ import type { ToolAttachment } from "../tool.js"
 
 export interface OutputFormatOptions {
   readonly includeImages: boolean
-  /** Use the hard-limit hint when the response cap, not the user, wins. */
   readonly hardCap?: boolean | undefined
   readonly saveImages?: boolean | undefined
   readonly maxOutputChars: number

@@ -92,11 +92,6 @@ export const toV2Result = (result: ToolResult): V2ToolResult => {
   return Object.keys(metadata).length > 0 ? { content, metadata } : { content }
 }
 
-/**
- * V2 custom tools do not receive the V1 ToolContext shape. Adapt the V2 tool
- * execution context, and route ctx.ask through the V2 permission domain so
- * every write and execution still prompts (or is denied by explicit rules).
- */
 export const toToolContext = (
   pluginContext: Plugin.Context,
   context: V2ToolContext,
@@ -119,8 +114,6 @@ export const toToolContext = (
       .catch(() => {})
   },
   ask: async (input) => {
-    // V2 calls the execution permission "shell". Keep accepting the internal
-    // legacy name "bash" so older custom tools keep working.
     const action = input.permission === "bash" ? "shell" : input.permission
     await pluginContext.permission.assert({
       sessionID: context.sessionID as PermissionAssertInput["sessionID"],
@@ -149,7 +142,6 @@ export const toV2Tool = (
     description: registration.definition.description,
     input: jsonSchemaFor(registration.definition),
     options: {
-      // Native tools (not Code Mode) so permissions surface on the tool call.
       codemode: false,
       ...(registration.permission === undefined
         ? {}

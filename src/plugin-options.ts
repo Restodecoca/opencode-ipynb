@@ -72,10 +72,6 @@ export const PluginOptionsSchema = z.object({
 })
 export type PluginOptions = z.infer<typeof PluginOptionsSchema>
 
-/**
- * Resolve the interpreter used for execution and diagnostics. The explicit
- * environment variable wins over the plugin option, matching the README.
- */
 const findExecutable = (name: string): string | undefined => {
   const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)
   const names =
@@ -92,7 +88,6 @@ const findExecutable = (name: string): string | undefined => {
         if (process.platform !== "win32") fs.accessSync(candidate, fs.constants.X_OK)
         return candidate
       } catch {
-        // keep looking
       }
     }
   }
@@ -107,10 +102,6 @@ export const resolvePythonPath = (
     env !== undefined && env.length > 0 ? env : options.pythonPath
   if (value === undefined || value.trim().length === 0) return undefined
   const trimmed = value.trim()
-  // Path-like values must be absolute so the permission resource and the
-  // spawned executable cannot diverge. Bare names are resolved through PATH
-  // here, because pyright's --pythonpath resolves relative values against the
-  // notebook directory.
   if (!path.isAbsolute(trimmed) && /[\\/]/.test(trimmed)) {
     throw new Error(
       "pythonPath must be absolute or a bare command name resolved through PATH"

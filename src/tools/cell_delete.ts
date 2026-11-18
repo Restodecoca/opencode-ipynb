@@ -23,7 +23,6 @@ export const ipynbCellDeleteTool = tool({
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context)
     try {
-      // The result includes a preview of the deleted source.
       await assertReadPermission(context, input.filePath)
       const result = await runToolEffect(
         services.edit.deleteCell(input.filePath, input.cellIndex)

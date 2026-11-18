@@ -20,7 +20,6 @@ export const formatAttachment = (
   filename?: string
 ): ToolAttachment => {
   const ext = pickExtensionForMime(mime)
-  // Jupyter stores image/svg+xml as raw XML, unlike base64 raster formats.
   const isRawSvg =
     mime.toLowerCase() === "image/svg+xml" &&
     (payload.includes("<svg") || payload.includes("<?xml"))

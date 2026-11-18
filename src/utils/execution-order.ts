@@ -6,7 +6,6 @@ export interface ExecutionOrderEntry {
   readonly previousCount: number
 }
 
-/** Cells whose execution_count is lower than a previous non-null count. */
 export const analyzeExecutionOrder = (
   notebook: NotebookRaw
 ): ReadonlyArray<ExecutionOrderEntry> => {
@@ -17,8 +16,6 @@ export const analyzeExecutionOrder = (
     if (!cell || cell.cell_type !== "code") continue
     const ec = cell.execution_count
     if (ec === null || ec === undefined) {
-      // A null count is a fresh-run boundary: subsequent cells compare
-      // against the new starting count, not the last non-null one.
       lastCount = null
       continue
     }

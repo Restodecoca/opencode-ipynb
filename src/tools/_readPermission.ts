@@ -3,12 +3,6 @@ import type { ToolContext } from "../tool.js"
 import { PermissionDeniedError } from "../domain/errors.js"
 import { permissionAliases } from "../services/PermissionService.js"
 
-/**
- * Custom V2 tools are not automatically covered by the host's native `read`
- * action. Ask explicitly before handing notebook content to a read-only tool.
- * The lexical and resolved paths are both requested so a symlink alias cannot
- * bypass a deny rule on the real notebook.
- */
 export const assertReadPermission = async (
   context: ToolContext,
   filePath: string

@@ -306,11 +306,6 @@ const build = (
     })
 })
 
-/**
- * Standalone Effect: detect imports that the user's Python cannot resolve.
- * Pass the result of `pythonSvc.probe()` for `pythonPath`; the analyzer skips
- * itself when the probe says "none" (no Python on PATH).
- */
 export const analyzeMissingPackagesForPython = (
   notebook: NotebookRaw,
   pythonPath: string,

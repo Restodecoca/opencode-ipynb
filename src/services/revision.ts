@@ -13,11 +13,9 @@ type RevisionError =
   | NotebookValidationError
   | PathOutsideWorktreeError
 
-/** Resolve the canonical target before prompting; I/O uses this pinned path. */
 export const pinRealPath = (filePath: string): Effect.Effect<string, never> =>
   Effect.promise(() => fsp.realpath(filePath).catch(() => filePath))
 
-/** SHA-256 of the exact bytes on disk, used to detect external edits. */
 export const contentHash = (text: string): string =>
   createHash("sha256").update(text).digest("hex")
 
@@ -27,10 +25,6 @@ export const readRevision = (
 ): Effect.Effect<string, RevisionError> =>
   Effect.map(fileSvc.readText(absPath), contentHash)
 
-/**
- * Fail instead of overwriting a notebook that changed while the tool held it
- * open (for example during an interactive permission prompt).
- */
 export const assertRevisionUnchanged = (
   fileSvc: NotebookFileServiceShape,
   absPath: string,

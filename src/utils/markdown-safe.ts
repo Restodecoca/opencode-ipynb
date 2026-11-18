@@ -1,6 +1,5 @@
 import { stripAnsi } from "./ansi.js"
 
-/** Single-line label safe inside markdown table/labels. */
 export const sanitizeInline = (text: string): string =>
   stripAnsi(text)
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
@@ -23,7 +22,6 @@ const scanOpenFence = (text: string): OpenFence | undefined => {
       const opener = OPENER.exec(line)
       if (opener === null) continue
       const run = opener[1]!
-      // A backtick fence's info string may not contain another backtick.
       if (run[0] === "`" && opener[2]!.includes("`")) continue
       open = { char: run[0]!, length: Math.min(run.length, MAX_FENCE) }
     } else {
@@ -36,10 +34,6 @@ const scanOpenFence = (text: string): OpenFence | undefined => {
   return open
 }
 
-/**
- * Truncate rendered markdown without leaving a code fence open. Any fence
- * opened before the cut is closed before the truncation hint is appended.
- */
 export const truncateMarkdown = (
   text: string,
   maxChars: number,
@@ -49,8 +43,6 @@ export const truncateMarkdown = (
   if (normalized.length <= maxChars) return normalized
   const budget = Math.max(0, maxChars - hint.length - MAX_FENCE * 2)
   let cut = normalized.slice(0, budget)
-  // Keep pathological marker runs from swallowing the response; 3 markers
-  // are enough to represent the block once it is closed.
   cut = cut.replace(/`{33,}/g, "```").replace(/~{33,}/g, "~~~")
   const open = scanOpenFence(cut)
   const closing =
