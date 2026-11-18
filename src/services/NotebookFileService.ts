@@ -32,6 +32,7 @@ import {
 } from "../utils/json.js"
 import { MAX_NOTEBOOK_BYTES } from "../utils/limits.js"
 import { replaceFile } from "../utils/atomic-replace.js"
+import { beforeRenameHook } from "../utils/rename-hook.js"
 
 export interface NotebookFileServiceOptions {
   readonly worktree?: string
@@ -559,14 +560,46 @@ const buildFileService = (
               }
               return undefined
             })
-            await replaceFile(tmp, target, warningSink)
-            const finalStat = await fsp.stat(target).catch((error: unknown) => {
+            const freshDir = await probeRealpath(warningSink, path.dirname(target))
+            await beforeRenameHook(target)
+            if (freshDir === undefined) {
+              throw new NotebookWriteError({
+                message: "the notebook directory disappeared before the write",
+                filePath
+              })
+            }
+            if (root !== undefined && !inside(root, freshDir)) {
+              throw new PathOutsideWorktreeError({
+                message: "path resolves outside of the worktree (symlink swap)",
+                filePath,
+                worktree: root
+              })
+            }
+            const rechecked = await probeRealpath(warningSink, path.dirname(target))
+            if (rechecked === undefined || (root !== undefined && !inside(root, rechecked))) {
+              throw new PathOutsideWorktreeError({
+                message: "path resolves outside of the worktree (symlink swap)",
+                filePath,
+                worktree: root ?? ""
+              })
+            }
+            const freshTarget = path.join(rechecked, path.basename(target))
+            if (freshTarget !== target) {
+              const moved = await fsp.rename(tmp, path.join(freshDir, path.basename(tmp))).then(
+                () => path.join(freshDir, path.basename(tmp)),
+                () => tmp
+              )
+              await replaceFile(moved, freshTarget, warningSink)
+            } else {
+              await replaceFile(tmp, target, warningSink)
+            }
+            const finalStat = await fsp.stat(freshTarget).catch((error: unknown) => {
               if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
                 warningSink?.add(
                   warningFrom(
                     "revision-check",
                     error,
-                    `inspecting ${target} after the write`
+                    `inspecting ${freshTarget} after the write`
                   )
                 )
               }
@@ -593,10 +626,10 @@ const buildFileService = (
               finalStat !== undefined &&
               tempStat.ino === finalStat.ino
             ) {
-              const landed = await fsp.readFile(target, "utf8").catch((error: unknown) => {
+              const landed = await fsp.readFile(freshTarget, "utf8").catch((error: unknown) => {
                 if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
                   warningSink?.add(
-                    warningFrom("revision-check", error, `reading ${target} after the write`)
+                    warningFrom("revision-check", error, `reading ${freshTarget} after the write`)
                   )
                 }
                 return undefined

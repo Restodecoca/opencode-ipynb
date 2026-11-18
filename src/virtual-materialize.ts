@@ -6,6 +6,7 @@ import * as path from "node:path"
 import type { NotebookVirtualDocument } from "./lsp.js"
 import { sanitizeNotebookText } from "./notebook-diagnostics.js"
 import { absoluteDriveRoot } from "./utils/paths.js"
+import { beforeRenameHook } from "./utils/rename-hook.js"
 import {
   type Warning,
   type WarningSink,
@@ -145,6 +146,18 @@ const writeSidecar = async (
   )
   try {
     await fsp.writeFile(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 })
+    await beforeRenameHook(safeTarget)
+    const freshDir = await fsp.realpath(path.dirname(safeTarget))
+    if (!inside(rootReal, freshDir)) {
+      throw new Error(`Refusing to write outside the session directory: ${freshDir}`)
+    }
+    const freshTarget = path.join(freshDir, path.basename(safeTarget))
+    if (freshTarget !== safeTarget) {
+      const moved = path.join(freshDir, path.basename(temp))
+      await fsp.rename(temp, moved)
+      await replaceFile(moved, freshTarget, sink)
+      return trackSidecar(rootReal, freshTarget, target)
+    }
     await replaceFile(temp, safeTarget, sink)
   } catch (error) {
     await fsp.rm(temp, { force: true }).catch((cleanupError: unknown) => {
