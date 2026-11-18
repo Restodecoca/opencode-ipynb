@@ -913,3 +913,42 @@ describe("union validation errors name the offending field", () => {
     }
   })
 })
+
+describe("excessively nested values", () => {
+  it("refuses the write with the depth limit named and the file untouched", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-deep-"))
+    const file = path.join(dir, "n.ipynb")
+    const depth = 5_000
+    const deep = "[".repeat(depth) + "]".repeat(depth)
+    const body = `{"cells": [{"cell_type": "markdown", "metadata": {}, "source": ["# A"]}], "metadata": {"deep": ${deep}}, "nbformat": 4, "nbformat_minor": 5}\n`
+    fs.writeFileSync(file, body)
+    const before = fs.readFileSync(file)
+    const svc = makeNotebookFileService({ worktree: dir })
+    try {
+      const read = await Effect.runPromise(svc.readWithText(file))
+      const edited = read.notebook as unknown as {
+        cells: Array<Record<string, unknown>>
+        metadata: Record<string, unknown>
+      }
+      edited.cells[0] = { ...edited.cells[0], source: ["# B"] }
+      const exit = await Effect.runPromiseExit(
+        svc.writeAtomic(file, read.notebook as never, {
+          format: read.format,
+          previousText: read.text
+        })
+      )
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Cause.findErrorOption(exit.cause)
+        const value = error._tag === "Some" ? error.value : undefined
+        expect(value).toBeInstanceOf(NotebookValidationError)
+        expect((value as { message?: string }).message ?? "").toContain("nesting")
+        expect((value as { message?: string }).message ?? "").toContain("512")
+      }
+      expect(fs.readFileSync(file).equals(before)).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

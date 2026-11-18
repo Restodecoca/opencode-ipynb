@@ -7,6 +7,7 @@ import {
   type PatchFailureReason
 } from "./json-patch.js"
 
+export { MAX_JSON_DEPTH } from "./json-patch.js"
 export type { PatchFailureReason }
 
 export const safeParseJson = (

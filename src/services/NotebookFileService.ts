@@ -11,7 +11,7 @@ import {
   PathOutsideWorktreeError
 } from "../domain/errors.js"
 import { NotebookSchema, applyNotebookDefaults, type NotebookRaw } from "../domain/notebook.js"
-import type { PatchFailureReason, WriteMode } from "../utils/json.js"
+import { MAX_JSON_DEPTH, type PatchFailureReason, type WriteMode } from "../utils/json.js"
 import { absoluteDriveRoot } from "../utils/paths.js"
 import { realpathWithRetry } from "../utils/realpath.js"
 import { type WarningSink, warningFrom } from "../utils/warnings.js"
@@ -440,9 +440,32 @@ const buildFileService = (
           : yield* readExistingText(filePath)
       const format = options?.format ?? (stored === undefined ? DEFAULT_NOTEBOOK_FORMAT : detectNotebookFormat(stored))
       const previousText = options?.previousText ?? stored
-      const rewrite = previousText === undefined
-        ? { text: stringifyNotebook(notebook, format), mode: "fallback" as const, reason: undefined }
-        : rewriteNotebookTextDetailed(previousText, notebook, format)
+      const rewrite = yield* Effect.try({
+        try: () =>
+          previousText === undefined
+            ? { text: stringifyNotebook(notebook, format), mode: "fallback" as const, reason: undefined }
+            : rewriteNotebookTextDetailed(previousText, notebook, format),
+        catch: (error) =>
+          new NotebookValidationError({
+            message:
+              error instanceof RangeError
+                ? `notebook nesting exceeds the supported depth of ${MAX_JSON_DEPTH}`
+                : error instanceof Error
+                  ? error.message
+                  : String(error),
+            filePath,
+            issues: ["reduce the nesting of the metadata or output values and retry"]
+          })
+      })
+      if (rewrite.reason === "too-deep") {
+        return yield* new NotebookValidationError({
+          message: `notebook nesting exceeds the supported depth of ${MAX_JSON_DEPTH}`,
+          filePath,
+          issues: [
+            "reduce the nesting of the metadata or output values and retry"
+          ]
+        })
+      }
       const serialized = rewrite.text
       if (Buffer.byteLength(serialized, "utf8") > MAX_NOTEBOOK_BYTES) {
         return yield* new NotebookValidationError({

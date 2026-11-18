@@ -62,7 +62,16 @@ const parseStringSpan = (text: string, start: number): number => {
   throw new SyntaxError("unterminated string")
 }
 
-const parseNode = (text: string, from: number): JsonNode => {
+export const MAX_JSON_DEPTH = 512
+
+class DepthExceededError extends RangeError {}
+
+const parseNode = (text: string, from: number, depth = 0): JsonNode => {
+  if (depth > MAX_JSON_DEPTH) {
+    throw new DepthExceededError(
+      `notebook nesting exceeds the supported depth of ${MAX_JSON_DEPTH}`
+    )
+  }
   const start = skipWhitespace(text, from)
   const char = text[start]
   if (char === '"') {
@@ -81,7 +90,7 @@ const parseNode = (text: string, from: number): JsonNode => {
       const key = JSON.parse(text.slice(keyStart, keyEnd)) as string
       pos = skipWhitespace(text, keyEnd)
       pos = skipWhitespace(text, pos + 1)
-      const value = parseNode(text, pos)
+      const value = parseNode(text, pos, depth + 1)
       entries.push({ key, keyStart, value })
       pos = skipWhitespace(text, value.end)
       if (text[pos] === ",") {
@@ -103,7 +112,7 @@ const parseNode = (text: string, from: number): JsonNode => {
       return { kind: "array", start, end: pos + 1, items, value: [] }
     }
     for (;;) {
-      const value = parseNode(text, pos)
+      const value = parseNode(text, pos, depth + 1)
       items.push(value)
       pos = skipWhitespace(text, value.end)
       if (text[pos] === ",") {
@@ -635,6 +644,7 @@ export type PatchFailureReason =
   | "overlapping-edits"
   | "not-representable"
   | "verification-failed"
+  | "too-deep"
 
 export interface PatchResult {
   readonly text?: string
@@ -651,14 +661,16 @@ export const patchJsonTextDetailed = (
   try {
     root = parseNode(text, 0)
     previous = root.value
-  } catch {
+  } catch (error) {
+    if (error instanceof DepthExceededError) return { reason: "too-deep" }
     return { reason: "parse-failed" }
   }
   const layout: Layout = { text, style: options.style }
   const edits: Edit[] = []
   try {
     patchNode(next, previous, root, edits, layout, "")
-  } catch {
+  } catch (error) {
+    if (error instanceof RangeError) return { reason: "too-deep" }
     return { reason: "patch-threw" }
   }
   if (edits.length === 0) {
@@ -684,8 +696,28 @@ export const patchJsonText = (
   options: PatchOptions
 ): string | undefined => patchJsonTextDetailed(text, next, options).text
 
+export const jsonDepth = (value: unknown, depth = 0): number => {
+  if (depth > MAX_JSON_DEPTH) return depth
+  if (value === null || typeof value !== "object") return depth
+  let deepest = depth
+  const children = Array.isArray(value) ? value : Object.values(value as Record<string, unknown>)
+  for (const child of children) {
+    const childDepth = jsonDepth(child, depth + 1)
+    if (childDepth > deepest) deepest = childDepth
+    if (deepest > MAX_JSON_DEPTH) return deepest
+  }
+  return deepest
+}
+
 export const formatJsonValue = (
   value: unknown,
   style: JsonTextStyle,
   multiline = true
-): string => formatValue(value, "", multiline, { text: "", style })
+): string => {
+  if (jsonDepth(value) > MAX_JSON_DEPTH) {
+    throw new DepthExceededError(
+      `value nesting exceeds the supported depth of ${MAX_JSON_DEPTH}`
+    )
+  }
+  return formatValue(value, "", multiline, { text: "", style })
+}
