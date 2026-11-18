@@ -59,6 +59,50 @@ const measurePatch = (cells: number): number => {
   return (Bun.nanoseconds() - started) / 1e6
 }
 
+const buildMetadataNotebook = (keys: number): string => {
+  const metadata: Record<string, number> = {}
+  for (let index = 0; index < keys; index += 1) {
+    metadata[`k${index.toString().padStart(6, "0")}`] = index
+  }
+  return `${JSON.stringify(
+    {
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: null,
+          id: "c0",
+          metadata: {},
+          outputs: [],
+          source: ["print(0)"]
+        }
+      ],
+      metadata,
+      nbformat: 4,
+      nbformat_minor: 5
+    },
+    null,
+    1
+  )}\n`
+}
+
+const measureMetadataPatch = (keys: number): number => {
+  const text = buildMetadataNotebook(keys)
+  const next = JSON.parse(text) as { metadata: Record<string, number> }
+  const keep: Record<string, number> = {}
+  for (const key of Object.keys(next.metadata)) {
+    if (Number(key.slice(1)) % 2 === 1) keep[key] = next.metadata[key]!
+  }
+  for (let index = 0; index < keys / 4; index += 1) {
+    keep[`a${index.toString().padStart(6, "0")}`] = index
+    keep[`z${index.toString().padStart(6, "0")}`] = index
+  }
+  next.metadata = keep
+  const started = Bun.nanoseconds()
+  const result = patchJsonTextDetailed(text, next, { style: patchStyle })
+  if (result.text === undefined) throw new Error(`metadata patch fell back: ${result.reason}`)
+  return (Bun.nanoseconds() - started) / 1e6
+}
+
 interface Measurement {
   readonly cells: number
   readonly bytes: number
@@ -126,6 +170,8 @@ const ratios = (small: Measurement, large: Measurement) => ({
 const BUDGET = Number(process.env.IPYNB_BENCH_RATIO ?? "2.5")
 const SMALL = Number(process.env.IPYNB_BENCH_SMALL ?? "1000")
 const LARGE = Number(process.env.IPYNB_BENCH_LARGE ?? "4000")
+const META_SMALL = Number(process.env.IPYNB_BENCH_META_SMALL ?? "1000")
+const META_LARGE = Number(process.env.IPYNB_BENCH_META_LARGE ?? "32000")
 
 const main = async (): Promise<void> => {
   await measure(SMALL)
@@ -149,11 +195,19 @@ const main = async (): Promise<void> => {
   console.log(
     `cost per byte vs linear: clearAll=${normalized.clearAll.toFixed(2)}x move=${normalized.move.toFixed(2)}x edit=${normalized.edit.toFixed(2)}x patchAll=${normalized.patch.toFixed(2)}x`
   )
+  const metadataSmall = measureMetadataPatch(META_SMALL)
+  const metadataLarge = measureMetadataPatch(META_LARGE)
+  const metadataRatio =
+    metadataLarge / Math.max(metadataSmall, 0.5) / (META_LARGE / META_SMALL)
+  console.log(
+    `metadata object patch ${META_SMALL}->${META_LARGE} keys: ${metadataSmall.toFixed(1)}ms -> ${metadataLarge.toFixed(1)}ms (${metadataRatio.toFixed(2)}x of linear)`
+  )
   const failures: string[] = []
   if (normalized.clearAll > BUDGET) failures.push(`clearAll ${normalized.clearAll.toFixed(2)}x`)
   if (normalized.move > BUDGET) failures.push(`move ${normalized.move.toFixed(2)}x`)
   if (normalized.edit > BUDGET) failures.push(`edit ${normalized.edit.toFixed(2)}x`)
   if (normalized.patch > BUDGET) failures.push(`patchAll ${normalized.patch.toFixed(2)}x`)
+  if (metadataRatio > BUDGET) failures.push(`metadataPatch ${metadataRatio.toFixed(2)}x`)
   if (failures.length > 0) {
     console.error(
       `FAIL: write cost grows faster than the notebook (budget ${BUDGET}x linear): ${failures.join(", ")}`

@@ -449,19 +449,21 @@ const patchObject = (
     : layout.style.itemSeparator
   const byKey = new Map(node.entries.map((entry) => [entry.key, entry]))
 
-  const removed = node.entries.filter(
-    (entry) => !Object.prototype.hasOwnProperty.call(value, entry.key)
+  const removedSet = new Set(
+    node.entries.filter(
+      (entry) => !Object.prototype.hasOwnProperty.call(value, entry.key)
+    )
   )
   for (let index = 0; index < node.entries.length; ) {
     const entry = node.entries[index]!
-    if (!removed.includes(entry)) {
+    if (!removedSet.has(entry)) {
       index += 1
       continue
     }
     let lastIndex = index
     while (
       lastIndex + 1 < node.entries.length &&
-      removed.includes(node.entries[lastIndex + 1]!)
+      removedSet.has(node.entries[lastIndex + 1]!)
     ) {
       lastIndex += 1
     }
@@ -502,11 +504,19 @@ const patchObject = (
       })
       return
     }
-    const surviving = node.entries.filter((entry) => !removed.includes(entry))
+    const surviving = node.entries.filter((entry) => !removedSet.has(entry))
     const groups = new Map<string, string[]>()
     const appended: string[] = []
+    let anchorPosition = 0
     for (const key of [...added].sort()) {
-      const anchor = surviving.find((entry) => entry.key > key)
+      while (
+        anchorPosition < surviving.length &&
+        surviving[anchorPosition]!.key <= key
+      ) {
+        anchorPosition += 1
+      }
+      const anchor =
+        anchorPosition < surviving.length ? surviving[anchorPosition] : undefined
       if (anchor === undefined) {
         appended.push(key)
       } else {
