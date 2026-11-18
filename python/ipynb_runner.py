@@ -305,6 +305,14 @@ def _build_env_report(
     }
 
 
+def _require_positive_int(req: Dict[str, Any], field: str) -> None:
+    if field not in req:
+        return
+    value = req[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer, got {value!r}")
+
+
 def _validate_request(req: Dict[str, Any]) -> None:
     required = {"filePath", "mode"}
     missing = required - req.keys()
@@ -312,6 +320,8 @@ def _validate_request(req: Dict[str, Any]) -> None:
         raise ValueError(f"missing required fields: {sorted(missing)}")
     if req["mode"] not in {"cell", "range", "all", "from", "env", "serve"}:
         raise ValueError(f"invalid mode: {req['mode']!r}")
+    _require_positive_int(req, "timeoutMs")
+    _require_positive_int(req, "maxOutputChars")
 
 
 def _select_cell_indexes(req: Dict[str, Any], total: int) -> List[int]:
