@@ -1,9 +1,12 @@
 ---------------- MODULE NotebookWriteLockLostUpdate ----------------
 EXTENDS Naturals
 
+\* The dishonest twin of NotebookWriteLock: the writer releases and
+\* writes without rechecking the version it captured at acquire.
+
 CONSTANTS Writers, None
 
-VARIABLES holder, disk, revision, running, finished, lostUpdate
+VARIABLES holder, disk, revision, running, finished, wrote, stale
 
 Init ==
   /\ holder = None
@@ -11,48 +14,55 @@ Init ==
   /\ revision = 0
   /\ running = Writers
   /\ finished = {}
-  /\ lostUpdate = FALSE
+  /\ wrote = {}
+  /\ stale = [w \in Writers |-> FALSE]
 
 Acquire(w) ==
   /\ w \in running
   /\ holder = None
   /\ holder' = w
-  /\ UNCHANGED <<disk, revision, running, finished, lostUpdate>>
+  /\ revision' = disk
+  /\ stale' = [stale EXCEPT ![w] = FALSE]
+  /\ UNCHANGED <<disk, running, finished, wrote>>
 
 WriteWithoutRecheck(w) ==
   /\ holder = w
   /\ disk' = disk + 1
-  /\ revision' = disk
-  /\ lostUpdate' = (revision /= disk)
   /\ holder' = None
   /\ running' = running \ {w}
   /\ finished' = finished \union {w}
+  /\ wrote' = wrote \union {w}
+  /\ UNCHANGED <<revision, stale>>
 
 ExternalWrite ==
-  /\ holder = None
   /\ disk' = disk + 1
-  /\ revision' = revision
-  /\ UNCHANGED <<holder, running, finished, lostUpdate>>
+  /\ stale' = IF holder = None
+                THEN stale
+                ELSE [stale EXCEPT ![holder] = TRUE]
+  /\ UNCHANGED <<holder, revision, running, finished, wrote>>
 
 Next ==
   \/ \E w \in running : Acquire(w)
   \/ \E w \in running : WriteWithoutRecheck(w)
   \/ ExternalWrite
 
-Spec == Init /\ [][Next]_<<holder, disk, revision, running, finished, lostUpdate>>
+Spec == Init /\ [][Next]_<<holder, disk, revision, running, finished, wrote, stale>>
 
 TypeOK ==
   /\ holder \in (Writers \union {None})
   /\ running \subseteq Writers
   /\ finished \subseteq Writers
+  /\ wrote \subseteq finished
+  /\ running \intersect finished = {}
   /\ disk \in Nat
   /\ revision \in Nat
+  /\ stale \in [Writers -> BOOLEAN]
 
 StateConstraint ==
   /\ disk <= 3
   /\ revision <= 3
 
 NoLostUpdate ==
-  lostUpdate = FALSE
+  \A w \in wrote : stale[w] = FALSE
 
-=============================================================================
+=====================================
