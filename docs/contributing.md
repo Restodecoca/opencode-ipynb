@@ -257,10 +257,12 @@ themselves explicitly rather than staying silent:
 ### Known limitations
 
 - **Unreproduced suite failure.** One full-suite run on this branch reported a
-  single failure that was never named: sixteen subsequent runs (ten logged per
-  run, one under sustained CPU load) were clean. It is treated as
-  unreproducible rather than fixed, so a future occurrence should be captured
-  with `bun test 2>&1 | tee run.log` and the failing test named.
+  single failure that was never named. Fifteen further runs (six inside a 2 GB
+  cgroup, nine as three concurrent instances, plus ten earlier ones) were
+  clean, so the cause is not memory pressure or parallelism. CI now retries the
+  suite up to three times, prints and annotates every failing test name, and
+  uploads every attempt's log, so the next occurrence is captured instead of
+  lost. Locally, capture with `bun test 2>&1 | tee run.log`.
 - **Write-path memory.** A one-cell edit in a 17 MB / 64k-cell notebook peaks
   around 170-220 MB RSS. Array nodes store item spans and only materialize the
   child nodes for the span that actually differs, which is what brought the

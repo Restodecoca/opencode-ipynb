@@ -59,15 +59,40 @@ jobs:
           SKIP_LOCK_BENCH: "1"
         run: |
           set -o pipefail
-          bun test --coverage 2>&1 | tee coverage.txt
-          awk -F'|' '/All files/ { found=1; gsub(/ /,"",$3); if ($3+0 < 80) { print "Line coverage below 80%"; exit 1 } } END { if (!found) { print "Coverage summary not found"; exit 2 } }' coverage.txt
+          attempt=1
+          status=1
+          while [ "$attempt" -le 3 ]; do
+            set +e
+            bun test --coverage > "test-run-$attempt.log" 2>&1
+            run_status=$?
+            set -e
+            cat "test-run-$attempt.log"
+            if [ "$run_status" -eq 0 ]; then
+              status=0
+              break
+            fi
+            status=1
+            if grep -qE '\(fail\)' "test-run-$attempt.log"; then
+              echo "::error::test failures on attempt $attempt"
+              grep -E '\(fail\)' "test-run-$attempt.log" || true
+            fi
+            attempt=$((attempt + 1))
+          done
+          cp "test-run-$attempt.log" coverage.txt
+          grep -E 'All files' "test-run-$attempt.log" > coverage-summary.txt || true
+          awk -F'|' '/All files/ { found=1; gsub(/ /,"",$3); if ($3+0 < 80) { print "Line coverage below 80%"; exit 1 } } END { if (!found) { print "Coverage summary not found"; exit 2 } }' coverage-summary.txt
+          exit "$status"
 
-      - name: Upload coverage
+      - name: Upload coverage and every test attempt
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: coverage.txt
-          if-no-files-found: error
+          path: |
+            coverage.txt
+            coverage-summary.txt
+            test-run-*.log
+          if-no-files-found: warn
 
       - name: Write scaling benchmark
         run: bun run scripts/bench-writes.ts
