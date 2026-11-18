@@ -759,3 +759,50 @@ sys.stdout.buffer.flush()
   })
 
 })
+
+describe("pyright file-level errors", () => {
+  it("keeps the batch when a diagnostic has no range", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-diag-norange-"))
+    const file = path.join(dir, "notebook.ipynb")
+    const script = path.join(dir, "norange-pyright")
+    // A real pyright exits 1 when it reports errors, and omits `range` for a
+    // file-level report such as "Code is too complex to analyze".
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+exec ${JSON.stringify(path.resolve(".venv", "bin", "python"))} -c 'import json,sys
+target = sys.argv[2]
+print(json.dumps({
+  "version": "1.1.0",
+  "generalDiagnostics": [
+    {"file": target, "severity": "error", "message": "Code is too complex to analyze"},
+    {"file": target, "severity": "error", "message": "real problem",
+     "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}}
+  ],
+  "summary": {"filesAnalyzed": 1, "errorCount": 2, "warningCount": 0}
+}))' "$@"
+exit 1
+`,
+      "utf8"
+    )
+    fs.chmodSync(script, 0o755)
+    const document = buildNotebookVirtualDocument(notebook, { filePath: file })
+    try {
+      const result = await diagnoseNotebook({
+        filePath: file,
+        document,
+        pyrightPath: script
+      })
+      expect(result.skipped).toBeUndefined()
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message)
+      expect(messages).toContain("Code is too complex to analyze")
+      expect(messages).toContain("real problem")
+      expect(
+        result.diagnostics.some((diagnostic) => diagnostic.fileLevel === true)
+      ).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

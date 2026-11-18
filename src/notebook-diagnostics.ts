@@ -27,6 +27,8 @@ export interface NotebookDiagnostic {
   readonly severity: "error"
   readonly message: string
   readonly rule?: string
+  /** pyright reported this for the whole file and supplied no position. */
+  readonly fileLevel?: boolean
 }
 
 export interface NotebookDiagnosticsOptions {
@@ -794,6 +796,24 @@ export const diagnoseNotebook = async (
           ? item.file
           : path.resolve(directory, item.file)
         if (itemPath !== path.resolve(tempFile)) continue
+        // pyright omits `range` for a file-level report ("Code is too complex to
+        // analyze", syntax errors in the file prologue). Dereferencing it threw,
+        // the throw was swallowed, and EVERY diagnostic for the notebook was
+        // lost. Report those without a position instead of dropping the batch.
+        if (item.range === undefined) {
+          diagnostics.push({
+            cellIndex: -1,
+            line: 1,
+            character: 1,
+            endLine: 1,
+            endCharacter: 1,
+            severity: "error",
+            message: item.message ?? "pyright reported a file-level error",
+            ...(item.rule === undefined ? {} : { rule: item.rule }),
+            fileLevel: true
+          })
+          continue
+        }
         const rawMapped = toCellPosition(
           document,
           item.range.start.line,
