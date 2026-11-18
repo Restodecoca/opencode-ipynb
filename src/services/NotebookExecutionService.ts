@@ -570,6 +570,12 @@ export const mergeExecutedOutputs = (
   shapes: MergeShapeInputs
 ): Effect.Effect<Map<number, CodeCellRaw>, CellIndexOutOfBoundsError> =>
   Effect.gen(function* () {
+    const summaryByIndex = new Map<number, CellExecutionSummary>()
+    for (const summary of summaries) {
+      if (!summaryByIndex.has(summary.cellIndex)) {
+        summaryByIndex.set(summary.cellIndex, summary)
+      }
+    }
     const merged = new Map<number, CodeCellRaw>()
     for (const idx of executedCells) {
       if (idx < 0 || idx >= cells.length) {
@@ -582,7 +588,7 @@ export const mergeExecutedOutputs = (
       }
       const cell = cells[idx] as CellRaw
       if (cell.cell_type !== "code") continue
-      const summary = summaries.find((o) => o.cellIndex === idx)
+      const summary = summaryByIndex.get(idx)
       if (summary === undefined) continue
       const next: CodeCellRaw = {
         ...cell,
