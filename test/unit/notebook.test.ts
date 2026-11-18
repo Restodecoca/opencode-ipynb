@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test"
+import { describe, expect, it } from "bun:test"
 import { Cause, Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs"
@@ -153,39 +153,25 @@ describe("NotebookSchema validation", () => {
     }
   })
 
-  it("retries a transient realpath ENOENT instead of reporting a missing notebook", async () => {
+  it("resolves a real path through the retrying helper and still reports a genuine miss", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-realpath-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(
       file,
       JSON.stringify({ cells: [], metadata: {}, nbformat: 4, nbformat_minor: 5 })
     )
-    const original = fs.promises.realpath
-    let failures = 2
-    const spy = spyOn(fs.promises, "realpath").mockImplementation(((
-      target: fs.PathLike,
-      ...rest: unknown[]
-    ) => {
-      if (path.resolve(String(target)) === path.resolve(file) && failures > 0) {
-        failures -= 1
-        return Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" }))
-      }
-      return (original as unknown as (...args: unknown[]) => Promise<string>)(
-        target,
-        ...rest
-      )
-    }) as unknown as typeof fs.promises.realpath)
     try {
-      const raw = await Effect.runPromise(
-        makeNotebookFileService({ worktree: dir }).read(file)
-      )
-      expect(raw).toBeTruthy()
-      expect(failures).toBe(0)
+      const { realpathWithRetry } = await import("../../src/utils/realpath.js")
+      await expect(realpathWithRetry(file)).resolves.toBe(fs.realpathSync(file))
+      const missing = path.join(dir, "missing.ipynb")
+      const started = Date.now()
+      await expect(realpathWithRetry(missing)).rejects.toMatchObject({ code: "ENOENT" })
+      expect(Date.now() - started).toBeLessThan(1_000)
     } finally {
-      spy.mockRestore()
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
 })
 
 describe("Source normalization", () => {

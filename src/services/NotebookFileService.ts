@@ -56,7 +56,7 @@ const probeRealpath = async (
   target: string
 ): Promise<string | undefined> => {
   try {
-    return await fsp.realpath(target)
+    return await realpathWithRetry(target)
   } catch (error) {
     if (!isMissingPath(error)) {
       sink?.add(warningFrom("path-resolution", error, `resolving ${target}`))
@@ -174,7 +174,7 @@ const buildFileService = (
   const warningSink = options.warningSink
   const resolveInside = async (filePath: string): Promise<string> => {
     if (worktree === undefined) return filePath
-    const root = await fsp.realpath(worktree).catch(() => worktree)
+    const root = await realpathWithRetry(worktree).catch(() => worktree)
     const real = await realpathWithRetry(filePath)
     if (!inside(root, real)) {
       throw new PathOutsideWorktreeError({
@@ -229,10 +229,10 @@ const buildFileService = (
           const root =
             worktree === undefined
               ? undefined
-              : await fsp.realpath(worktree).catch(() => worktree)
+              : await realpathWithRetry(worktree).catch(() => worktree)
           const target =
             worktree === undefined
-              ? await fsp.realpath(resolved).catch(() => resolved)
+              ? await realpathWithRetry(resolved).catch(() => resolved)
               : resolved
           if (root !== undefined && !inside(root, target)) {
             throw new PathOutsideWorktreeError({
@@ -467,7 +467,7 @@ const buildFileService = (
             worktree === undefined
               ? (await probeRealpath(warningSink, dir)) ?? dir
               : await (async () => {
-                  const real = await fsp.realpath(dir)
+                  const real = await realpathWithRetry(dir)
                   if (!inside(root!, real)) {
                     throw new PathOutsideWorktreeError({
                       message: "path resolves outside of the worktree (symlink)",
@@ -638,13 +638,12 @@ const buildFileService = (
         }
         const key = yield* Effect.tryPromise({
           try: async () => {
-            const real = await fsp.realpath(filePath).catch((error: unknown) => {
+            const real = await realpathWithRetry(filePath).catch((error: unknown) => {
               reportLock("resolving the lock key", error)
               return undefined
             })
             if (real !== undefined) return real
-            const parent = await fsp
-              .realpath(path.dirname(filePath))
+            const parent = await realpathWithRetry(path.dirname(filePath))
               .catch((error: unknown) => {
                 reportLock("resolving the lock key parent", error)
                 return path.dirname(filePath)

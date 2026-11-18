@@ -1,4 +1,4 @@
-import { promises as fsp } from "node:fs"
+import * as fsp from "node:fs/promises"
 
 const ATTEMPTS = 5
 const DELAY_MS = 2
