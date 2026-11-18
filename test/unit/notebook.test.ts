@@ -952,3 +952,49 @@ describe("excessively nested values", () => {
     }
   })
 })
+
+describe("unrepresentable notebook values", () => {
+  it("refuses the write with an actionable message instead of dropping the field", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-undef-"))
+    const file = path.join(dir, "n.ipynb")
+    const body = `${JSON.stringify(
+      { cells: [], metadata: { keep: 1 }, nbformat: 4, nbformat_minor: 5 },
+      null,
+      1
+    )}\n`
+    fs.writeFileSync(file, body)
+    const before = fs.readFileSync(file)
+    try {
+      const svc = makeNotebookFileService({ worktree: dir })
+      const exit = await Effect.runPromiseExit(
+        svc.writeAtomic(
+          file,
+          { cells: [], metadata: { keep: 1, gone: undefined }, nbformat: 4, nbformat_minor: 5 } as never,
+          {
+            trusted: true,
+            format: {
+              unit: " ",
+              newline: "\n",
+              itemSeparator: ", ",
+              keySeparator: ": ",
+              ensureAscii: false,
+              trailingNewline: true
+            }
+          }
+        )
+      )
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Cause.findErrorOption(exit.cause)
+        const value = error._tag === "Some" ? error.value : undefined
+        expect(value).toBeInstanceOf(NotebookValidationError)
+        expect((value as { message?: string }).message ?? "").toContain("serialized to JSON")
+        const issues = (value as { issues?: ReadonlyArray<string> }).issues ?? []
+        expect(issues.join(" ")).toContain("undefined, BigInt, cyclic")
+      }
+      expect(fs.readFileSync(file).equals(before)).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

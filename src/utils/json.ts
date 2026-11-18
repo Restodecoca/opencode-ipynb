@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { NotebookParseError } from "../domain/errors.js"
 import {
   formatJsonValue,
+  jsonEqual,
   patchJsonTextDetailed,
   type JsonTextStyle,
   type PatchFailureReason
@@ -125,8 +126,22 @@ export const rewriteNotebookTextDetailed = (
   if (patched.text !== undefined) {
     return { text: patched.text, mode: "patched" }
   }
+  const text = stringifyNotebook(notebook, format)
+  // The patched path re-parses and compares before it is trusted; the fallback
+  // used to be returned unverified, so a value JSON cannot represent (an
+  // `undefined` field, a BigInt) was silently dropped and the write reported
+  // success. Re-parse here and fall back to an unrepresentable result so the
+  // caller can refuse instead of losing data.
+  const reason = patched.reason ?? "not-representable"
+  try {
+    if (!jsonEqual(JSON.parse(text), notebook)) {
+      return { text, mode: "fallback", reason }
+    }
+  } catch {
+    return { text, mode: "fallback", reason }
+  }
   return {
-    text: stringifyNotebook(notebook, format),
+    text,
     mode: "fallback",
     ...(patched.reason === undefined ? {} : { reason: patched.reason })
   }

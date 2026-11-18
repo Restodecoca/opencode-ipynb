@@ -85,6 +85,11 @@ const buildMetadataNotebook = (keys: number): string => {
   )}\n`
 }
 
+const medianMs = (samples: ReadonlyArray<number>): number => {
+  const sorted = [...samples].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)]!
+}
+
 const measureMetadataPatch = (keys: number): number => {
   const text = buildMetadataNotebook(keys)
   const next = JSON.parse(text) as { metadata: Record<string, number> }
@@ -222,19 +227,29 @@ const INTERLEAVED_LARGE = Number(process.env.IPYNB_BENCH_INTERLEAVED_LARGE ?? "6
 const measureLargeOutput = (): { ms: number; rssDeltaMb: number } => {
   const { formatOutputs } = require("../src/format/outputs.js") as {
     formatOutputs: (
-      outputs: ReadonlyArray<Record<string, unknown>>,
+      cell: Record<string, unknown>,
       options: { maxOutputChars: number }
     ) => string
   }
   const text = "x".repeat(40 * 1024 * 1024)
+  // formatOutputs takes a CELL, not an outputs array: passing the array
+  // returned "" and measured nothing, so the guard could never fail.
+  const cell = {
+    cell_type: "code",
+    execution_count: 1,
+    metadata: {},
+    source: "print(1)",
+    outputs: [{ output_type: "stream", name: "stdout", text }]
+  }
   const before = process.memoryUsage().rss
   const started = Bun.nanoseconds()
-  formatOutputs(
-    [{ output_type: "stream", name: "stdout", text }],
-    { maxOutputChars: 6_000 }
-  )
+  const rendered = formatOutputs(cell, { maxOutputChars: 6_000 })
+  const elapsed = (Bun.nanoseconds() - started) / 1e6
+  if (!rendered.includes("truncated")) {
+    throw new Error("large-output probe rendered no truncation marker")
+  }
   return {
-    ms: (Bun.nanoseconds() - started) / 1e6,
+    ms: elapsed,
     rssDeltaMb: (process.memoryUsage().rss - before) / 1e6
   }
 }
@@ -416,15 +431,23 @@ const main = async (): Promise<void> => {
   console.log(
     `cost per byte vs linear: clearAll=${normalized.clearAll.toFixed(2)}x move=${normalized.move.toFixed(2)}x edit=${normalized.edit.toFixed(2)}x patchAll=${normalized.patch.toFixed(2)}x`
   )
-  const metadataSmall = measureMetadataPatch(META_SMALL)
-  const metadataLarge = measureMetadataPatch(META_LARGE)
+  const metadataSmall = medianMs(
+    Array.from({ length: 3 }, () => measureMetadataPatch(META_SMALL))
+  )
+  const metadataLarge = medianMs(
+    Array.from({ length: 3 }, () => measureMetadataPatch(META_LARGE))
+  )
   const metadataRatio =
     metadataLarge / Math.max(metadataSmall, 0.5) / (META_LARGE / META_SMALL)
   console.log(
     `metadata object patch ${META_SMALL}->${META_LARGE} keys: ${metadataSmall.toFixed(1)}ms -> ${metadataLarge.toFixed(1)}ms (${metadataRatio.toFixed(2)}x of linear)`
   )
-  const interleavedSmall = measureInterleavedMetadataPatch(INTERLEAVED_SMALL)
-  const interleavedLarge = measureInterleavedMetadataPatch(INTERLEAVED_LARGE)
+  const interleavedSmall = medianMs(
+    Array.from({ length: 3 }, () => measureInterleavedMetadataPatch(INTERLEAVED_SMALL))
+  )
+  const interleavedLarge = medianMs(
+    Array.from({ length: 3 }, () => measureInterleavedMetadataPatch(INTERLEAVED_LARGE))
+  )
   const interleavedRatio =
     interleavedLarge /
     Math.max(interleavedSmall, 0.5) /
@@ -469,7 +492,9 @@ const main = async (): Promise<void> => {
   if (objectHeavy.ms > 400) failures.push(`objectHeavyTime ${objectHeavy.ms.toFixed(0)}ms`)
   if (unicodeEscape.ms > 400) failures.push(`unicodeEscapeTime ${unicodeEscape.ms.toFixed(1)}ms`)
   if (unicodeEscape.rssDeltaMb > 200) failures.push(`unicodeEscapeRss ${unicodeEscape.rssDeltaMb.toFixed(0)}MB`)
-  if (largeOutput.ms > 200) failures.push(`largeOutputTime ${largeOutput.ms.toFixed(1)}ms`)
+  // 0.7-1.1 ms with the pre-truncation, 14.2 ms without it (20x), so a 5 ms
+  // ceiling separates them with room for this machine's variance.
+  if (largeOutput.ms > 5) failures.push(`largeOutputTime ${largeOutput.ms.toFixed(1)}ms`)
   if (largeOutput.rssDeltaMb > 100) failures.push(`largeOutputRss ${largeOutput.rssDeltaMb.toFixed(0)}MB`)
   if (normalized.clearAll > BUDGET) failures.push(`clearAll ${normalized.clearAll.toFixed(2)}x`)
   if (normalized.move > BUDGET) failures.push(`move ${normalized.move.toFixed(2)}x`)

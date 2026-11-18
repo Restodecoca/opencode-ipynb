@@ -439,11 +439,13 @@ const buildFileService = (
             message:
               error instanceof RangeError
                 ? `notebook nesting exceeds the supported depth of ${MAX_JSON_DEPTH}`
-                : error instanceof Error
-                  ? error.message
-                  : String(error),
+                : `the notebook cannot be serialized to JSON: ${error instanceof Error ? error.message : String(error)}`,
             filePath,
-            issues: ["reduce the nesting of the metadata or output values and retry"]
+            issues: [
+              error instanceof RangeError
+                ? "reduce the nesting of the metadata or output values and retry"
+                : "remove values JSON cannot represent (undefined, BigInt, cyclic references) and retry"
+            ]
           })
       })
       if (rewrite.reason === "too-deep") {

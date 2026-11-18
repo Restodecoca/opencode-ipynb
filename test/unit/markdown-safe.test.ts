@@ -175,3 +175,23 @@ describe("formatOutputs fence balance", () => {
     expect(fenceCount(out) % 2).toBe(0)
   })
 })
+
+describe("truncateMarkdown never emits a lone surrogate", () => {
+  it("keeps every budget a well-formed string", () => {
+    const emoji = "\u{1F600}".repeat(50)
+    const offenders: number[] = []
+    for (let budget = 1; budget <= 140; budget += 1) {
+      const result = truncateMarkdown(emoji, budget, "")
+      if ((result as { isWellFormed?: () => boolean }).isWellFormed?.() === false) {
+        offenders.push(budget)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it("also stays well-formed when a hint is appended", () => {
+    const astral = "\u{1D11E}".repeat(40)
+    const result = truncateMarkdown(astral, 65, "... (truncated)")
+    expect((result as { isWellFormed?: () => boolean }).isWellFormed?.()).toBe(true)
+  })
+})

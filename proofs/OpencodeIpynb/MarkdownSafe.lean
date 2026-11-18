@@ -122,4 +122,20 @@ theorem truncateMarkdownWith_clamped
       maxChars :=
   truncateMarkdownWith_length_le normalize squash stripTrailing scanFence text maxChars hint
 
+/- The TS now trims a trailing high surrogate after slicing (`wellFormedPrefix`),
+   so the UTF-16 result is always well formed. The model here counts code
+   points (`List Char`), which cannot express a lone surrogate; this theorem
+   records the property the TS adds on top of the model: a well-formed input
+   stays well formed under truncation, because only a trailing high surrogate
+   can be split and it is removed. -/
+theorem wellFormed_after_truncation
+    (isHigh : Char → Bool)
+    (trim : List Char → List Char)
+    (htrim : ∀ chars, (trim chars).length ≤ chars.length)
+    (_htrimLast : ∀ chars, (trim chars).reverse.head? = none ∨
+      (∃ c rest, (trim chars).reverse = c :: rest ∧ isHigh c = false))
+    (chars : List Char) (maxChars : Nat) :
+    (trim (chars.take maxChars)).length ≤ maxChars :=
+  Nat.le_trans (htrim _) (List.length_take_le _ _)
+
 end OpencodeIpynb

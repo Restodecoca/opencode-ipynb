@@ -34,6 +34,19 @@ const scanOpenFence = (text: string): OpenFence | undefined => {
   return open
 }
 
+// Slicing a JS string can cut a surrogate pair in half, producing a lone high
+// or low surrogate: an invalid UTF-16 sequence that would be written verbatim
+// (or mangled by the encoder) if it survived to the notebook. Trim it back to
+// the last well-formed boundary.
+const wellFormedPrefix = (value: string): string => {
+  let result = value
+  if (result.length > 0) {
+    const last = result.charCodeAt(result.length - 1)
+    if (last >= 0xd800 && last <= 0xdbff) result = result.slice(0, -1)
+  }
+  return result
+}
+
 export const truncateMarkdown = (
   text: string,
   maxChars: number,
@@ -48,5 +61,7 @@ export const truncateMarkdown = (
   const closing =
     open === undefined ? "" : `\n${open.char.repeat(open.length)}\n`
   const result = `${cut.replace(/\n$/, "")}${closing}${hint}`
-  return result.length <= maxChars ? result : result.slice(0, maxChars)
+  return wellFormedPrefix(
+    result.length <= maxChars ? result : result.slice(0, maxChars)
+  )
 }
