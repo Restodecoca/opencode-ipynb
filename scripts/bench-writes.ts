@@ -103,6 +103,50 @@ const measureMetadataPatch = (keys: number): number => {
   return (Bun.nanoseconds() - started) / 1e6
 }
 
+const buildEvenMetadataNotebook = (keys: number): string => {
+  const metadata: Record<string, number> = {}
+  for (let index = 0; index < keys; index += 2) {
+    metadata[`k${index.toString().padStart(6, "0")}`] = index
+  }
+  return `${JSON.stringify(
+    {
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: null,
+          id: "c0",
+          metadata: {},
+          outputs: [],
+          source: ["print(0)"]
+        }
+      ],
+      metadata,
+      nbformat: 4,
+      nbformat_minor: 5
+    },
+    null,
+    1
+  )}\n`
+}
+
+const measureInterleavedMetadataPatch = (keys: number): number => {
+  const text = buildEvenMetadataNotebook(keys)
+  const next = JSON.parse(text) as { metadata: Record<string, number> }
+  const target: Record<string, number> = {}
+  for (const key of Object.keys(next.metadata)) {
+    target[key] = next.metadata[key]!
+    const odd = Number(key.slice(1)) + 1
+    if (odd < keys) target[`k${odd.toString().padStart(6, "0")}`] = odd
+  }
+  next.metadata = target
+  const started = Bun.nanoseconds()
+  const result = patchJsonTextDetailed(text, next, { style: patchStyle })
+  if (result.text === undefined) {
+    throw new Error(`interleaved metadata patch fell back: ${result.reason}`)
+  }
+  return (Bun.nanoseconds() - started) / 1e6
+}
+
 interface Measurement {
   readonly cells: number
   readonly bytes: number
@@ -172,6 +216,8 @@ const SMALL = Number(process.env.IPYNB_BENCH_SMALL ?? "1000")
 const LARGE = Number(process.env.IPYNB_BENCH_LARGE ?? "4000")
 const META_SMALL = Number(process.env.IPYNB_BENCH_META_SMALL ?? "1000")
 const META_LARGE = Number(process.env.IPYNB_BENCH_META_LARGE ?? "32000")
+const INTERLEAVED_SMALL = Number(process.env.IPYNB_BENCH_INTERLEAVED_SMALL ?? "1000")
+const INTERLEAVED_LARGE = Number(process.env.IPYNB_BENCH_INTERLEAVED_LARGE ?? "64000")
 
 const main = async (): Promise<void> => {
   await measure(SMALL)
@@ -202,12 +248,24 @@ const main = async (): Promise<void> => {
   console.log(
     `metadata object patch ${META_SMALL}->${META_LARGE} keys: ${metadataSmall.toFixed(1)}ms -> ${metadataLarge.toFixed(1)}ms (${metadataRatio.toFixed(2)}x of linear)`
   )
+  const interleavedSmall = measureInterleavedMetadataPatch(INTERLEAVED_SMALL)
+  const interleavedLarge = measureInterleavedMetadataPatch(INTERLEAVED_LARGE)
+  const interleavedRatio =
+    interleavedLarge /
+    Math.max(interleavedSmall, 0.5) /
+    (INTERLEAVED_LARGE / INTERLEAVED_SMALL)
+  console.log(
+    `interleaved metadata patch ${INTERLEAVED_SMALL}->${INTERLEAVED_LARGE} keys: ${interleavedSmall.toFixed(1)}ms -> ${interleavedLarge.toFixed(1)}ms (${interleavedRatio.toFixed(2)}x of linear)`
+  )
   const failures: string[] = []
   if (normalized.clearAll > BUDGET) failures.push(`clearAll ${normalized.clearAll.toFixed(2)}x`)
   if (normalized.move > BUDGET) failures.push(`move ${normalized.move.toFixed(2)}x`)
   if (normalized.edit > BUDGET) failures.push(`edit ${normalized.edit.toFixed(2)}x`)
   if (normalized.patch > BUDGET) failures.push(`patchAll ${normalized.patch.toFixed(2)}x`)
   if (metadataRatio > BUDGET) failures.push(`metadataPatch ${metadataRatio.toFixed(2)}x`)
+  if (interleavedRatio > BUDGET) {
+    failures.push(`interleavedMetadataPatch ${interleavedRatio.toFixed(2)}x`)
+  }
   if (failures.length > 0) {
     console.error(
       `FAIL: write cost grows faster than the notebook (budget ${BUDGET}x linear): ${failures.join(", ")}`

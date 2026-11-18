@@ -183,12 +183,32 @@ const canonicalJson = (value: unknown): string => {
     .join(",")}}`
 }
 
+const ESCAPE_WINDOW = 4096
+
+const escapeWindow = (chunk: string): string => {
+  let out = ""
+  let start = 0
+  for (let index = 0; index < chunk.length; index += 1) {
+    const code = chunk.charCodeAt(index)
+    if (code < 0x7f) continue
+    out += chunk.slice(start, index)
+    out += `\\u${code.toString(16).padStart(4, "0")}`
+    start = index + 1
+  }
+  return out + chunk.slice(start)
+}
+
+const NON_ASCII = /[\u007f-\uffff]/
+
 const encodeString = (value: string, ensureAscii: boolean): string => {
   const json = JSON.stringify(value)
-  if (!ensureAscii) return json
-  return json.replace(/[\u007f-\uffff]/g, (char) => {
-    return `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`
-  })
+  if (!ensureAscii || !NON_ASCII.test(json)) return json
+  const parts: string[] = []
+  for (let offset = 0; offset < json.length; offset += ESCAPE_WINDOW) {
+    const chunk = json.slice(offset, offset + ESCAPE_WINDOW)
+    parts.push(NON_ASCII.test(chunk) ? escapeWindow(chunk) : chunk)
+  }
+  return parts.join("")
 }
 
 const lineStart = (text: string, pos: number): number => {
@@ -334,20 +354,16 @@ const patchArray = (
     ? `,${layout.style.newline}${childIndent}`
     : layout.style.itemSeparator
 
-  const rawByIdentity = new Map<unknown, string>()
   const rawByKey = new Map<string, string>()
   for (let index = 0; index < node.items.length; index += 1) {
-    const item = oldItems[index]
     const source = node.items[index]!
-    const raw = layout.text.slice(source.start, source.end)
-    if (item !== null && typeof item === "object") rawByIdentity.set(item, raw)
-    rawByKey.set(canonicalJson(item), raw)
+    rawByKey.set(
+      canonicalJson(oldItems[index]),
+      layout.text.slice(source.start, source.end)
+    )
   }
   const rawFor = (item: unknown): string | undefined => {
-    const raw =
-      (item !== null && typeof item === "object"
-        ? rawByIdentity.get(item)
-        : undefined) ?? rawByKey.get(canonicalJson(item))
+    const raw = rawByKey.get(canonicalJson(item))
     if (raw === undefined) return undefined
     return raw.includes("\n") && !fileMultiline ? undefined : raw
   }
@@ -515,7 +531,7 @@ const patchObject = (
       return
     }
     const surviving = node.entries.filter((entry) => !removedSet.has(entry))
-    const groups = new Map<string, string[]>()
+    const groups = new Map<string, { anchor: ObjectEntry; keys: string[] }>()
     const appended: string[] = []
     let anchorPosition = 0
     for (const key of [...added].sort()) {
@@ -530,13 +546,15 @@ const patchObject = (
       if (anchor === undefined) {
         appended.push(key)
       } else {
-        const bucket = groups.get(anchor.key) ?? []
-        bucket.push(key)
-        groups.set(anchor.key, bucket)
+        const bucket = groups.get(anchor.key)
+        if (bucket === undefined) {
+          groups.set(anchor.key, { anchor, keys: [key] })
+        } else {
+          bucket.keys.push(key)
+        }
       }
     }
-    for (const [anchorKey, keys] of groups) {
-      const anchor = surviving.find((entry) => entry.key === anchorKey)!
+    for (const { anchor, keys } of groups.values()) {
       const text = keys.map(render).join(separator)
       edits.push({
         start: anchor.keyStart,
