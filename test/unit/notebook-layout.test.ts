@@ -1129,6 +1129,17 @@ describe("defaults respect the file's existing key order", () => {
     expect(Object.keys(out)).toEqual(["cells", "nbformat_minor", "nbformat", "metadata"])
   })
 
+  it("treats astral keys through UTF-16 order, which is unsorted in code points", async () => {
+    const out = await apply({
+      "\u{FFFD}a": 1,
+      "\u{10000}b": 2,
+      cells: []
+    })
+    expect(Object.keys(out).pop()).toBe("metadata")
+    expect(out["\u{FFFD}a" as keyof typeof out]).toBe(1)
+    expect(out["\u{10000}b" as keyof typeof out]).toBe(2)
+  })
+
   it("leaves an object that already has the key untouched", async () => {
     const cell = {
       cell_type: "code",

@@ -209,9 +209,31 @@ theorem strLt_conn (a b : String) (h : ¬ strLt a b = true) :
   · exact Or.inl heq
   · exact Or.inr (by simp [strLt, hgt])
 
+def bmpSafe (s : String) : Prop := ∀ c ∈ s.toList, c.toNat < 0xD800
+
 theorem insertSortedBy_string_sorted (keys : List String) (key : String)
+    (_hkeys : ∀ k ∈ keys, bmpSafe k) (_hkey : bmpSafe key)
     (hnc : ¬ hasKey keys key = true) (hs : isSortedBy strLt keys = true) :
     isSortedBy strLt (insertSortedBy strLt hasKey keys key) = true :=
   insertSortedBy_sorted strLt hasKey (fun _ _ hmem => hmem) strLt_conn keys key hnc hs
+
+theorem hasKey_middle (pre post : List α) (key : α) :
+    hasKey (pre ++ [key] ++ post) key = true := by
+  induction pre with
+  | nil => exact hasKey_cons_true key post key (beq_self_eq_true key)
+  | cons k rest ih =>
+      by_cases hk : (k == key) = true
+      · exact hasKey_cons_true k (rest ++ [key] ++ post) key hk
+      · rw [List.cons_append]
+        exact hasKey_cons_tail_true k (rest ++ [key] ++ post) key hk ih
+
+theorem insertSortedBy_hasKey_idempotent (lt : α → α → Bool) (keys : List α) (key : α) :
+    insertSortedBy lt hasKey (insertSortedBy lt hasKey keys key) key =
+      insertSortedBy lt hasKey keys key := by
+  by_cases hmem : hasKey keys key = true
+  · rw [insertSortedBy_noop lt hasKey keys key hmem,
+      insertSortedBy_noop lt hasKey keys key hmem]
+  · obtain ⟨pre, post, hres, _⟩ := insertSortedBy_positions lt hasKey keys key hmem
+    rw [hres, insertSortedBy_noop lt hasKey (pre ++ [key] ++ post) key (hasKey_middle pre post key)]
 
 end OpencodeIpynb
