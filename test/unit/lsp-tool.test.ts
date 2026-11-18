@@ -4,6 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { ipynbLspTool } from "../../src/tools/lsp.js"
 import type { ToolContext } from "../../src/tool.js"
+import { makeWarningSink, type WarningSink } from "../../src/utils/warnings.js"
 
 type ObjectToolResult = { output: string; metadata?: Record<string, unknown> }
 const runTool = async (
@@ -34,7 +35,7 @@ const makeNotebook = (language = "python"): string =>
     ]
   })
 
-const makeContext = (dir: string): ToolContext => ({
+const makeContext = (dir: string, warningSink?: WarningSink): ToolContext => ({
   sessionID: "ses_1",
   messageID: "msg_1",
   agent: "build",
@@ -42,7 +43,8 @@ const makeContext = (dir: string): ToolContext => ({
   worktree: dir,
   abort: new AbortController().signal,
   metadata: () => {},
-  ask: async () => {}
+  ask: async () => {},
+  ...(warningSink === undefined ? {} : { warningSink })
 })
 
 const fakePyright = (dir: string, body: string): string => {
@@ -94,17 +96,19 @@ describe("ipynb_lsp tool", () => {
     }
   })
 
-  it("reports missing pyright", async () => {
+  it("reports missing pyright and records the configured path that failed", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-lsp-missing-"))
     const file = path.join(dir, "notebook.ipynb")
     fs.writeFileSync(file, makeNotebook())
-    process.env[ENV] = JSON.stringify({
-      pyrightPath: path.join(dir, "does-not-exist")
-    })
+    const configured = path.join(dir, "does-not-exist")
+    process.env[ENV] = JSON.stringify({ pyrightPath: configured })
+    const sink = makeWarningSink()
     try {
-      const result = await runTool(file, makeContext(dir))
+      const result = await runTool(file, makeContext(dir, sink))
       expect(result.output).toContain("pyright was not found")
       expect(result.metadata?.skipped).toBe("pyright-not-found")
+      const warnings = sink.drain()
+      expect(warnings.some((warning) => (warning.detail ?? "").includes(configured))).toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

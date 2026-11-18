@@ -128,7 +128,7 @@ export const ipynbLspTool = tool({
         const materialized = await materializeVirtualDocument(
           document,
           context.directory,
-          { warningSink: context.warningSink }
+          context.warningSink === undefined ? undefined : { warningSink: context.warningSink }
         )
         const lines = [
           `Virtual Python document: ${sanitizeInline(materialized.path)}`,
@@ -193,7 +193,8 @@ export const ipynbLspTool = tool({
         !(await isPyrightAvailable(
           pluginOpts.pyrightPath,
           pluginOpts.diagnosticsTimeoutMs,
-          context.abort
+          context.abort,
+          context.warningSink === undefined ? undefined : { warningSink: context.warningSink }
         ))
       ) {
         return {
@@ -237,6 +238,9 @@ export const ipynbLspTool = tool({
         displayPath: input.filePath,
         tempFilePath: tempFile,
         ownedTempFile: true,
+        ...(context.warningSink === undefined
+          ? {}
+          : { warningSink: context.warningSink }),
         requestFallbackPermission: async () => {
           try {
             await context.ask({
@@ -307,6 +311,7 @@ export const ipynbLspTool = tool({
         metadata: {
           filePath: absolute,
           notebookDiagnostics: capDiagnosticMetadata(result.diagnostics),
+          ...(result.warnings === undefined ? {} : { warnings: result.warnings }),
           ...(result.skipped === undefined ? {} : { skipped: result.skipped })
         }
       }

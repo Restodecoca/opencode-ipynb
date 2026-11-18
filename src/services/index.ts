@@ -95,6 +95,7 @@ const getOrCreateSharedKernelManager = (
     readonly helperPath: string
     readonly workingDirectory: string
     readonly defaultTimeoutMs: number
+    readonly warningSink?: WarningSink | undefined
   },
   scope?: object
 ): KernelManagerShape => {
@@ -108,7 +109,8 @@ const getOrCreateSharedKernelManager = (
     opts.pythonPath ?? "",
     opts.helperPath,
     opts.workingDirectory,
-    opts.defaultTimeoutMs
+    opts.defaultTimeoutMs,
+    opts.warningSink === undefined ? "" : "sink"
   ])
   const existing = managers.get(key)
   if (existing) return existing
@@ -116,7 +118,8 @@ const getOrCreateSharedKernelManager = (
     pythonPath: opts.pythonPath ?? "python",
     helperPath: opts.helperPath,
     workingDirectory: opts.workingDirectory,
-    defaultTimeoutMs: opts.defaultTimeoutMs
+    defaultTimeoutMs: opts.defaultTimeoutMs,
+    ...(opts.warningSink === undefined ? {} : { warningSink: opts.warningSink })
   })
   managers.set(key, manager)
   return manager
@@ -186,7 +189,8 @@ export const buildServices = (
       pythonPath,
       helperPath: resolved.helperRelativePath,
       workingDirectory: ctx.directory,
-      defaultTimeoutMs: resolved.defaultTimeoutMs
+      defaultTimeoutMs: resolved.defaultTimeoutMs,
+      warningSink
     },
     ctx.pluginScope
   )

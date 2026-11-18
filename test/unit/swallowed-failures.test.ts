@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import * as fs from "node:fs"
 import * as fsp from "node:fs/promises"
 import * as os from "node:os"
@@ -12,6 +12,7 @@ import { makePathService } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
 import { makePythonService, type PythonServiceShape } from "../../src/services/PythonService.js"
 import { makeWarningSink } from "../../src/utils/warnings.js"
+import { NotebookValidationError } from "../../src/domain/errors.js"
 import { DEFAULT_NOTEBOOK_FORMAT } from "../../src/utils/json.js"
 import type { NotebookRaw } from "../../src/domain/notebook.js"
 import {
@@ -481,25 +482,14 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
     const sink = makeWarningSink()
     const svc = makeNotebookFileService({ worktree: dir, warningSink: sink })
     try {
-      await Effect.runPromise(
+      const exit = await Effect.runPromiseExit(
         svc.writeAtomic(file, notebook as unknown as NotebookRaw)
       )
-      const warnings = sink.drain()
-      expect(warnings.length).toBeGreaterThanOrEqual(1)
-      expect(
-        warnings.every(
-          (warning) =>
-            warning.source === "path-resolution" ||
-            warning.source === "revision-check"
-        )
-      ).toBe(true)
-      expect(
-        warnings.some(
-          (warning) =>
-            warning.source === "path-resolution" &&
-            (warning.detail ?? "").includes("n.ipynb")
-        )
-      ).toBe(true)
+      expect(exit._tag).toBe("Failure")
+      const error = exit._tag === "Failure" ? Cause.findErrorOption(exit.cause) : undefined
+      const failure = error?._tag === "Some" ? error.value : undefined
+      expect(failure).toBeInstanceOf(NotebookValidationError)
+      expect((failure as { message?: string }).message).toContain("could not be read")
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

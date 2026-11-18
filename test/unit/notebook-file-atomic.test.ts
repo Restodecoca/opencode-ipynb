@@ -5,7 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
 import { NotebookSchema, type NotebookRaw } from "../../src/domain/notebook.js"
-import { NotebookValidationError, NotebookWriteError } from "../../src/domain/errors.js"
+import { NotebookValidationError } from "../../src/domain/errors.js"
 
 const makeMinimalNotebook = (label: string): NotebookRaw => ({
   nbformat: 4,
@@ -119,7 +119,7 @@ describe("NotebookFileService.writeAtomic", () => {
     }
   })
 
-  it("cleans up the .tmp file when the rename fails (dest is a directory)", async () => {
+  it("refuses a directory target without leaving a .tmp file", async () => {
     const fileSvc = makeNotebookFileService()
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
     const file = path.join(dir, "out.ipynb")
@@ -129,7 +129,7 @@ describe("NotebookFileService.writeAtomic", () => {
       const result = await Effect.runPromise(
         fileSvc.writeAtomic(file, notebook).pipe(Effect.flip)
       )
-      expect(result).toBeInstanceOf(NotebookWriteError)
+      expect(result).toBeInstanceOf(NotebookValidationError)
       const entries = fs.readdirSync(dir)
       const tmpFiles = entries.filter((e) => e.endsWith(".tmp"))
       expect(tmpFiles.length).toBe(0)

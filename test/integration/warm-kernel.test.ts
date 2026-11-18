@@ -269,6 +269,7 @@ describeIf(realHelperEnabled(), "integration > warm kernel > source reload", () 
                 maxOutputChars: 4_000
               })
             )
+          await run(20_000)
           await run(1_000)
           const pid = kernel.list()[0]?.pid
           fs.writeFileSync(
