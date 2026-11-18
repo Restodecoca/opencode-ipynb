@@ -132,6 +132,12 @@ state.
   `Data.TaggedError`, etc.). Services are plain constructors returned to the
   tool layer; they are not registered in a `Context`/`Layer` because every
   tool call builds a context-scoped instance.
+- Explanatory comments are not used in `src/`; behaviour is pinned by tests,
+  public types, and `docs/`. The intent behind a non-obvious branch belongs in a
+  test name.
+- Formal verification lives outside the build: `specs/` models the write lock
+  and proves the lost-update hazard, `proofs/` proves the source splitting
+  round-trip. `scripts-verify.sh` runs both; CI executes it in a separate job.
 - Custom tool names cannot use OpenCode's native edit renderer; the plugin
   keeps edit results concise instead of shipping a renderer patch.
 - Materialization is file-based, not LSP 3.17 notebook synchronization.

@@ -152,3 +152,34 @@ Effect 4 conventions used here:
   `Cause.findErrorOption`/`Cause.squash` so host permission errors propagate.
 - Prefer `Data.TaggedError` for domain errors and keep `_tag` checks out of
   business logic.
+
+## Review protocol
+
+Every review, human or agent, must produce evidence rather than confidence.
+
+1. **Consult the installed dependency source first.** `node_modules/effect`,
+   `node_modules/zod`, `node_modules/@types/bun`, `node_modules/@opencode/plugin`
+   and `node_modules/@opencode/schema`, plus `.venv/lib/*/site-packages/nbformat`
+   for notebook semantics. Never judge an API from memory.
+2. **Use the language server.** `documentSymbol` to map a changed module,
+   `goToDefinition` and `hover` for anything not local, and `findReferences`
+   before changing a function, type, or shared contract. Report which symbols
+   and references were inspected; claim no navigation that did not happen.
+3. **Model the state machines.** `specs/` holds TLA+ models; `tlc` must agree.
+   Concurrency, locking, and revision checks belong there, not in prose.
+4. **Prove the pure properties.** `proofs/` holds the Lean 4 development;
+   `lake build` must succeed. Shape and round-trip invariants belong there.
+5. **Test both ways.** Run the suite, and run the opposite mutation: if a fix
+   cannot be reverted to make a test fail, the test proves nothing.
+6. **Never accept silence.** A swallowed failure is a defect. Record it through
+   `src/utils/warnings.ts` or surface it in the tool result; if a best-effort
+   step is genuinely expected to fail, say why in the report rather than
+   discarding it.
+7. **No explanatory comments in `src/`.** Intent belongs in the public types,
+   the tests, and these docs.
+8. **Report the config.** State the Bun/Node/Python versions and the exact
+   commands used, so the result can be reproduced.
+
+`./scripts-verify.sh` runs the Lean build and every TLA+ model. `bun run
+scripts/bench-writes.ts` asserts that write cost stays linear in the notebook
+size; a superlinear result fails the build. CI runs both.
