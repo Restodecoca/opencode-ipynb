@@ -505,7 +505,7 @@ const patchObject = (
     const render = (key: string): string =>
       `${encodeString(key, layout.style.ensureAscii)}${
         layout.style.keySeparator
-      }${formatValue(value[key], childIndent, fileMultiline, layout)}`
+      }${formatValue(value[key], childIndent, multiline, layout)}`
     if (node.entries.length === 0) {
       edits.push({
         start: node.start,

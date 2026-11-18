@@ -167,4 +167,62 @@ describe("write mode is observable", () => {
  }
 }`)
   })
+
+  it("keeps an added container value inline when its object is inline", async () => {
+    const { patchJsonTextDetailed } = await import("../../src/utils/json-patch.js")
+    const style = {
+      unit: " ",
+      newline: "\n" as const,
+      itemSeparator: ", ",
+      keySeparator: ": ",
+      ensureAscii: false
+    }
+    const previous = `{
+ "inline": {"a": 1},
+ "other": 2
+}`
+    const result = patchJsonTextDetailed(
+      previous,
+      { inline: { a: 1, arr: [1, 2] }, other: 2 },
+      { style }
+    )
+    expect(result.reason).toBeUndefined()
+    expect(result.text).toBe(`{
+ "inline": {"a": 1, "arr": [1, 2]},
+ "other": 2
+}`)
+  })
+
+  it("keeps an added container value multiline when its object is multiline", async () => {
+    const { patchJsonTextDetailed } = await import("../../src/utils/json-patch.js")
+    const style = {
+      unit: " ",
+      newline: "\n" as const,
+      itemSeparator: ", ",
+      keySeparator: ": ",
+      ensureAscii: false
+    }
+    const previous = `{
+ "block": {
+  "a": 1
+ },
+ "other": 2
+}`
+    const result = patchJsonTextDetailed(
+      previous,
+      { block: { a: 1, arr: [1, 2] }, other: 2 },
+      { style }
+    )
+    expect(result.reason).toBeUndefined()
+    expect(result.text).toBe(`{
+ "block": {
+  "a": 1,
+  "arr": [
+   1,
+   2
+  ]
+ },
+ "other": 2
+}`)
+  })
 })
