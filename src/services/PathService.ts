@@ -276,17 +276,19 @@ const buildPathService = (options: PathServiceOptions): PathServiceShape => {
                 })
               }
               await replaceFile(temp, target, sink)
-              await fsp.open(path.dirname(target), "r").then(async (dirHandle) => {
-                try {
-                  await dirHandle.sync()
-                } finally {
-                  await dirHandle.close()
-                }
-              }).catch((error: unknown) => {
-                sink?.add(
-                  warningFrom("atomic-replace", error, `syncing the directory of ${target}`)
-                )
-              })
+              if (process.platform !== "win32") {
+                await fsp.open(path.dirname(target), "r").then(async (dirHandle) => {
+                  try {
+                    await dirHandle.sync()
+                  } finally {
+                    await dirHandle.close()
+                  }
+                }).catch((error: unknown) => {
+                  sink?.add(
+                    warningFrom("atomic-replace", error, `syncing the directory of ${target}`)
+                  )
+                })
+              }
             } catch (error) {
               await fsp.rm(temp, { force: true }).catch((cleanupError: unknown) => {
                 sink?.add(warningFrom("temp-unlink", cleanupError, `left ${temp}`))

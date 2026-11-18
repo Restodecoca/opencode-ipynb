@@ -17,6 +17,9 @@ const deepDir = (root: string, depth: number): string => {
 
 describe("realpath retry cost", () => {
   it("does not spend the retry budget on a path whose parent already exists", async () => {
+    // The budget below is calibrated on Linux; win32 file APIs have a different
+    // fixed cost per call, so the same threshold is not meaningful there.
+    if (process.platform === "win32") return
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-realpath-cost-"))
     try {
       const dir = deepDir(root, 64)
