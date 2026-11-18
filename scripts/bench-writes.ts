@@ -269,6 +269,42 @@ const measureUnicodeEscape = (): { ms: number; rssDeltaMb: number } => {
   }
 }
 
+const measureObjectHeavyPatch = (): { ms: number; rssDeltaMb: number } => {
+  const { patchJsonTextDetailed } = require("../src/utils/json-patch.js") as {
+    patchJsonTextDetailed: (
+      text: string,
+      next: unknown,
+      options: { style: Record<string, unknown> }
+    ) => { text?: string; reason?: string }
+  }
+  const metadata: Record<string, number> = {}
+  for (let index = 0; index < 64_000; index += 1) {
+    metadata[`k${String(index).padStart(6, "0")}`] = index
+  }
+  const text = JSON.stringify({
+    cells: [],
+    metadata,
+    nbformat: 4,
+    nbformat_minor: 5
+  })
+  const next = JSON.parse(text) as { metadata: Record<string, number> }
+  next.metadata.k000005 = 999
+  const style = {
+    unit: " ",
+    newline: "\n",
+    itemSeparator: ", ",
+    keySeparator: ": ",
+    ensureAscii: false
+  }
+  const before = process.memoryUsage().rss
+  const started = Bun.nanoseconds()
+  patchJsonTextDetailed(text, next, { style })
+  return {
+    ms: (Bun.nanoseconds() - started) / 1e6,
+    rssDeltaMb: (process.memoryUsage().rss - before) / 1e6
+  }
+}
+
 const measureLargeNotebookEdit = async (): Promise<{
   ms: number
   rssDeltaMb: number
@@ -357,13 +393,19 @@ const main = async (): Promise<void> => {
   console.log(
     `unicode escape 4MB ensureAscii: ${unicodeEscape.ms.toFixed(1)}ms, rss +${unicodeEscape.rssDeltaMb.toFixed(0)}MB`
   )
+  const objectHeavy = measureObjectHeavyPatch()
+  console.log(
+    `one-key edit in 64k-key metadata: ${objectHeavy.ms.toFixed(0)}ms, rss +${objectHeavy.rssDeltaMb.toFixed(0)}MB`
+  )
   const largeEdit = await measureLargeNotebookEdit()
   console.log(
     `one-cell edit in a ${largeEdit.mb.toFixed(1)}MB / 64k-cell notebook: ${largeEdit.ms.toFixed(0)}ms, rss +${largeEdit.rssDeltaMb.toFixed(0)}MB`
   )
   const failures: string[] = []
   if (largeEdit.ms > 550) failures.push(`largeEditTime ${largeEdit.ms.toFixed(0)}ms`)
-  if (largeEdit.rssDeltaMb > 250) failures.push(`largeEditRss ${largeEdit.rssDeltaMb.toFixed(0)}MB`)
+  if (largeEdit.rssDeltaMb > 200) failures.push(`largeEditRss ${largeEdit.rssDeltaMb.toFixed(0)}MB`)
+  if (objectHeavy.ms > 400) failures.push(`objectHeavyTime ${objectHeavy.ms.toFixed(0)}ms`)
+  if (objectHeavy.rssDeltaMb > 150) failures.push(`objectHeavyRss ${objectHeavy.rssDeltaMb.toFixed(0)}MB`)
   if (unicodeEscape.ms > 400) failures.push(`unicodeEscapeTime ${unicodeEscape.ms.toFixed(1)}ms`)
   if (unicodeEscape.rssDeltaMb > 200) failures.push(`unicodeEscapeRss ${unicodeEscape.rssDeltaMb.toFixed(0)}MB`)
   if (largeOutput.ms > 200) failures.push(`largeOutputTime ${largeOutput.ms.toFixed(1)}ms`)
