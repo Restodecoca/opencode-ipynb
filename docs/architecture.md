@@ -68,6 +68,17 @@ per-call instances but shares module-level state where required:
 - `PythonService` instances are shared by option identity; kernel managers are
   scoped per plugin instance/context.
 
+Every write returns a `WriteOutcome` from `writeAtomic` (`mode`, plus a `reason`
+when the JSON splice could not be trusted). All writers surface it as
+`writeMode`/`writeModeReason` metadata, and a fallback rewrite also records a
+`json-patch` warning, so a degradation that reformats the file is never silent.
+Cross-cutting failures flow through `src/utils/warnings.ts` (`WarningSink`) into
+tool output text and `metadata.warnings`; kill-path and shell-refusal failures
+are recorded the same way (`cleanup`, `shell-command`), and `ipynb_doctor`
+reports an invalid `OPENCODE_IPYNB_OPTIONS` through the services'
+`envOptionsError`. Each deliberately silent site is inventoried in
+`docs/contributing.md` and enforced by `test/unit/silence-allowlist.test.ts`.
+
 Path checks happen before work, and the file service resolves and verifies the
 real path at use time (reads use the resolved path; writes target the resolved
 file/parent). This removes the practical symlink-swap window for notebook I/O
