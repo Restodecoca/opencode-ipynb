@@ -42,16 +42,14 @@ const indentUnitOf = (prefix: string): string => {
   return " "
 }
 
+const NON_ASCII_ESCAPE = /\\u(?:00[89a-fA-F][0-9a-fA-F]|0[1-9a-fA-F][0-9a-fA-F]{2}|[1-9a-fA-F][0-9a-fA-F]{3})/g
+
 const hasAsciiEscapes = (text: string): boolean => {
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] !== "\\" || text[index + 1] !== "u") continue
-    const hex = text.slice(index + 2, index + 6)
-    if (!/^[0-9a-fA-F]{4}$/.test(hex)) continue
-    if (text[index - 1] === "\\") {
-      index += 5
-      continue
-    }
-    if (Number.parseInt(hex, 16) > 0x7e) return true
+  NON_ASCII_ESCAPE.lastIndex = 0
+  for (let match = NON_ASCII_ESCAPE.exec(text); match !== null; match = NON_ASCII_ESCAPE.exec(text)) {
+    let backslashes = 0
+    for (let index = match.index - 1; index >= 0 && text[index] === "\\"; index -= 1) backslashes += 1
+    if (backslashes % 2 === 0) return true
   }
   return false
 }

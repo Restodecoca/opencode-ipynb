@@ -1064,3 +1064,32 @@ describe("format detection edge cases", () => {
     expect(detectNotebookFormat(ansi).ensureAscii).toBe(true)
   })
 })
+
+describe("ASCII escape detection", () => {
+  const detect = (text: string) => detectNotebookFormat(text).ensureAscii
+
+  it("detects a real non-ASCII escape", () => {
+    expect(detect(`{\n "n": "caf\\u00e9"\n}\n`)).toBe(true)
+    expect(detect(`{\n "n": "\\u2014"\n}\n`)).toBe(true)
+    expect(detect(`{\n "n": "\\u4e2d"\n}\n`)).toBe(true)
+    expect(detect(`{\n "n": "\\ud83d"\n}\n`)).toBe(true)
+  })
+
+  it("ignores ASCII-only escapes", () => {
+    expect(detect(`{\n "n": "a\\u0000b"\n}\n`)).toBe(false)
+    expect(detect(`{\n "n": "a\\u001bb"\n}\n`)).toBe(false)
+    expect(detect(`{\n "n": "a\\u007fb"\n}\n`)).toBe(false)
+  })
+
+  it("ignores an escaped backslash before a u sequence", () => {
+    expect(detect(`{\n "n": "s = \\"\\\\u00e9\\""\n}\n`)).toBe(false)
+  })
+
+  it("finds a non-ASCII escape that follows an ASCII one", () => {
+    expect(detect(`{\n "n": "\\u001b[31m caf\\u00e9"\n}\n`)).toBe(true)
+  })
+
+  it("ignores plain unicode", () => {
+    expect(detect(`{\n "n": "café — 中文"\n}\n`)).toBe(false)
+  })
+})
