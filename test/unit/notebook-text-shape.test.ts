@@ -177,4 +177,123 @@ describe("ipynb_run save keeps each cell's own text shape", () => {
     const out = await saveWith(text, [0], new Map([[0, raw]]))
     expect(out.cells[0]?.outputs[0]?.text).toBe("new\nline\n")
   })
+
+  it("restores each output's own shape instead of the cell majority", async () => {
+    const text = `{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": "old\\n"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "older\\n"
+     ]
+    }
+   ],
+   "source": [
+    "a"
+   ]
+  }
+ ],
+ "metadata": {},
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`
+    const raw = [
+      { name: "stdout", output_type: "stream", text: "new-a\n" },
+      { name: "stdout", output_type: "stream", text: "new-b\n" }
+    ]
+    const out = await saveWith(text, [0], new Map([[0, raw]]))
+    expect(out.cells[0]?.outputs[0]?.text).toBe("new-a\n")
+    expect(out.cells[0]?.outputs[1]?.text).toEqual(["new-b\n"])
+  })
+
+  it("restores each data mime value to its own shape", async () => {
+    const text = `{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "output_type": "display_data",
+     "data": {
+      "text/plain": "plain"
+     }
+    },
+    {
+     "output_type": "display_data",
+     "data": {
+      "text/html": [
+        "<b>old</b>\\n"
+      ]
+     }
+    }
+   ],
+   "source": [
+    "a"
+   ]
+  }
+ ],
+ "metadata": {},
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`
+    const raw = [
+      { output_type: "display_data", data: { "text/plain": "np" } },
+      { output_type: "display_data", data: { "text/html": "<b>new</b>\n" } }
+    ]
+    const out = await saveWith(text, [0], new Map([[0, raw]]))
+    const first = out.cells[0]?.outputs[0] as { data: Record<string, unknown> }
+    const second = out.cells[0]?.outputs[1] as { data: Record<string, unknown> }
+    expect(first.data["text/plain"]).toBe("np")
+    expect(second.data["text/html"]).toEqual(["<b>new</b>\n"])
+  })
+
+  it("uses the cell shape for an output position that did not exist before", async () => {
+    const text = `{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "old\\n"
+     ]
+    }
+   ],
+   "source": [
+    "a"
+   ]
+  }
+ ],
+ "metadata": {},
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`
+    const raw = [
+      { name: "stdout", output_type: "stream", text: "a\n" },
+      { name: "stdout", output_type: "stream", text: "b\n" }
+    ]
+    const out = await saveWith(text, [0], new Map([[0, raw]]))
+    expect(out.cells[0]?.outputs[0]?.text).toEqual(["a\n"])
+    expect(out.cells[0]?.outputs[1]?.text).toEqual(["b\n"])
+  })
 })

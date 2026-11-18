@@ -439,40 +439,65 @@ export const textShapeOfCell = (cell: CellRaw, fallback: TextShape): TextShape =
   return fallback
 }
 
-const splitMimebundle = (
-  data: Record<string, unknown>
-): Record<string, unknown> => {
-  const next: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(data)) {
-    if (typeof value === "string" && isSplittableMime(key)) {
-      next[key] = splitSourceLines(value)
-    } else {
-      next[key] = value
-    }
-  }
-  return next
+export interface OutputTextShapes {
+  readonly text: TextShape | undefined
+  readonly data: ReadonlyMap<string, TextShape>
 }
 
-export const restoreNbformatLineArrays = (
-  outputs: ReadonlyArray<Record<string, unknown>>,
-  splitLineArrays: boolean
-): Array<Record<string, unknown>> => {
-  if (!splitLineArrays) return [...outputs]
-  return outputs.map((output) => {
-    const next: Record<string, unknown> = { ...output }
-    const outputType = next["output_type"]
-    if (outputType === "execute_result" || outputType === "display_data") {
-      const data = next["data"]
-      if (data !== null && typeof data === "object" && !Array.isArray(data)) {
-        next["data"] = splitMimebundle(data as Record<string, unknown>)
+export type CellValueShapes = ReadonlyArray<OutputTextShapes>
+
+export const captureValueShapes = (cell: CellRaw): CellValueShapes => {
+  if (cell.cell_type !== "code") return []
+  return (cell as CodeCellRaw).outputs.map((output) => {
+    const data = new Map<string, TextShape>()
+    const bundle = output["data"]
+    if (bundle !== null && typeof bundle === "object" && !Array.isArray(bundle)) {
+      for (const [key, value] of Object.entries(bundle as Record<string, unknown>)) {
+        if (!isSplittableMime(key)) continue
+        const shape = shapeOfValue(value)
+        if (shape !== undefined) data.set(key, shape)
       }
     }
-    if (typeof next["text"] === "string") {
-      next["text"] = splitSourceLines(next["text"] as string)
-    }
-    return next
+    return { text: shapeOfValue(output["text"]), data }
   })
 }
+
+const restoreDataShapes = (
+  output: Record<string, unknown>,
+  previous: OutputTextShapes | undefined,
+  cellShape: TextShape
+): Record<string, unknown> => {
+  const outputType = output["output_type"]
+  if (outputType !== "execute_result" && outputType !== "display_data") return output
+  const data = output["data"]
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return output
+  let next: Record<string, unknown> | undefined
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (!isSplittableMime(key) || typeof value !== "string") continue
+    if ((previous?.data.get(key) ?? cellShape) !== "arrays") continue
+    if (next === undefined) next = { ...(data as Record<string, unknown>) }
+    next[key] = splitSourceLines(value)
+  }
+  if (next === undefined) return output
+  return { ...output, data: next }
+}
+
+export const restoreValueShapes = (
+  outputs: ReadonlyArray<Record<string, unknown>>,
+  previous: CellValueShapes | undefined,
+  cellShape: TextShape
+): Array<Record<string, unknown>> =>
+  outputs.map((output, index) => {
+    const prior = previous?.[index]
+    if (typeof output["text"] === "string" && (prior?.text ?? cellShape) === "arrays") {
+      return restoreDataShapes(
+        { ...output, text: splitSourceLines(output["text"] as string) },
+        prior,
+        cellShape
+      )
+    }
+    return restoreDataShapes(output, prior, cellShape)
+  })
 
 export const notebookTextShape = (notebook: NotebookRaw): TextShape => {
   const shapes = notebook.cells.map((cell) => textShapeOfCell(cell as CellRaw, "strings"))
@@ -730,6 +755,7 @@ const makeExecutionImpl = (
 
         let beforeHash: string | undefined
         let beforeShapes: Map<number, TextShape> | undefined
+        let beforeValueShapes: Map<number, CellValueShapes> | undefined
         if (request.save) {
           const before = yield* fileSvc.readWithText(kernelPath)
           beforeHash = createHash("sha256").update(before.text).digest("hex")
@@ -738,6 +764,12 @@ const makeExecutionImpl = (
             before.notebook.cells.map((cell, index) => [
               index,
               textShapeOfCell(cell as CellRaw, fallback)
+            ])
+          )
+          beforeValueShapes = new Map(
+            before.notebook.cells.map((cell, index) => [
+              index,
+              captureValueShapes(cell as CellRaw)
             ])
           )
         }
@@ -802,9 +834,10 @@ const makeExecutionImpl = (
                   if (!summary) continue
                   const next: CodeCellRaw = {
                     ...cell,
-                    outputs: restoreNbformatLineArrays(
+                    outputs: restoreValueShapes(
                       summary.rawOutputs ?? buildPersistedOutputs(summary),
-                      (beforeShapes?.get(idx) ?? notebookShape) === "arrays"
+                      beforeValueShapes?.get(idx),
+                      beforeShapes?.get(idx) ?? notebookShape
                     ) as CodeCellRaw["outputs"],
                     execution_count:
                       summary.executionCount !== undefined && summary.executionCount !== null
