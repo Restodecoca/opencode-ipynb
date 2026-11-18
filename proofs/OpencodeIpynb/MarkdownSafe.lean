@@ -108,10 +108,12 @@ theorem truncateMarkdownWith_hint_survives
     omega
   rw [clampChars_within _ maxChars htotal]
 
-/- When the caller's budget cannot hold the hint plus a fence pair, the
-   truncator clamps the whole result, so the hint is cut: that is what the TS
-   does for `maxChars < hint.length + 2 * MAX_FENCE`, and the hypothesis of
-   `truncateMarkdownWith_hint_survives` above is exactly the boundary. -/
+/- When the caller's budget cannot hold the hint plus a fence pair the
+   truncator clamps the whole result, so the hint may be cut. The measured
+   boundary in the TS is `maxChars < hint.length` (a 45-character hint
+   survives from `maxChars = 45`), which is weaker than the hypothesis of
+   `truncateMarkdownWith_hint_survives` above: that theorem states a
+   sufficient condition, not the exact threshold. -/
 theorem truncateMarkdownWith_clamped
     (normalize squash stripTrailing : List Char → List Char)
     (scanFence : List Char → Option (Char × Nat))

@@ -46,4 +46,7 @@ done
 
 rm -f "$root"/specs/*_TTrace_*.bin "$root"/specs/*_TTrace_*.tla
 
+echo "== tla+ vacuity probes =="
+"$root/scripts-vacuity.sh"
+
 echo "== all checks passed =="

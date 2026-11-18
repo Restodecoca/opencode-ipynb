@@ -170,8 +170,9 @@ Every review, human or agent, must produce evidence rather than confidence.
    Concurrency, locking, and revision checks belong there, not in prose.
    Each good spec is paired with a dishonest twin that must violate its
    declared `.expect` line, and every checked invariant is probed for
-   vacuity: a temporary inverse invariant must be violated to prove the
-   pinned path is reachable. Two assumptions are stated in the modules
+   vacuity by `scripts-vacuity.sh` (run from `scripts-verify.sh`): it builds a
+   temporary inverse invariant per checked state and requires TLC to violate
+   it, proving the pinned path is reachable. Two assumptions are stated in the modules
    themselves: the save spec collapses the under-lock recheck and the
    rename into one step (the in-process file lock serializes plugin
    writers; a non-cooperating external writer keeps a residual window no

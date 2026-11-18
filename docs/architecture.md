@@ -87,9 +87,13 @@ the check and the rename remains possible for a local actor that can rename
 directories inside the worktree; that residual race is documented as a
 limitation rather than claimed impossible. The write region is uninterruptible,
 so the file lock is released only after the rename settles, and after the
-rename the write compares the target inode with the temp file's: when another
-process replaced the file in between, the call fails with a
-concurrent-replacement error instead of reporting a lost write as success. Bare `python` and
+rename the write compares the target inode with the temp file's and, when the
+inode is unchanged, re-reads the target: a writer that replaced or rewrote the
+notebook at that path is reported as a concurrent-replacement error instead of
+a lost write reported as success. Those checks are path based, so they catch a
+competitor that writes at the same path; if the parent directory is moved after
+the final containment recheck and the temp is carried across the boundary, the
+call still succeeds, which is the documented parent-swap limitation above. Bare `python` and
 `pyright` names are resolved to absolute PATH entries before spawning; if
 pyright is not found, the plugin fails closed instead of letting `cmd.exe`
 search the project cwd. Relative `pythonPath`/`pyrightPath` values are rejected.
