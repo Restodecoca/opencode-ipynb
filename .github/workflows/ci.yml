@@ -64,11 +64,43 @@ jobs:
           path: coverage.txt
           if-no-files-found: error
 
+      - name: Write scaling benchmark
+        run: bun run scripts/bench-writes.ts
+
       - name: Build
         run: bun run build
 
       - name: Package dry run
         run: npm pack --dry-run
+
+  formal:
+    name: TLA+ models and Lean proofs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java for TLC
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install TLA+ tools
+        run: |
+          curl -fsSL -o tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          echo "TLA_JAR=$PWD/tla2tools.jar" >> "$GITHUB_ENV"
+
+      - name: Setup Lean
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: proofs
+          auto-config: false
+          build: true
+          use-github-cache: false
+
+      - name: Verify
+        run: ./scripts-verify.sh
 
   windows-typecheck:
     name: Windows typecheck

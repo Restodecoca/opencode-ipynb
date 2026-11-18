@@ -3,9 +3,24 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "== lean proofs =="
-(cd "$root/proofs" && lake build)
+if command -v lake >/dev/null 2>&1; then
+  (cd "$root/proofs" && lake build)
+else
+  echo "SKIP: lake not on PATH" >&2
+  exit 1
+fi
 
 echo "== tla+ model check =="
+if [ -n "${TLA_JAR:-}" ]; then
+  tlc() { java -cp "$TLA_JAR" tlc2.TLC "$@"; }
+elif command -v tlc >/dev/null 2>&1; then
+  tlc() { command tlc "$@"; }
+else
+  echo "SKIP: neither tlc nor TLA_JAR is available" >&2
+  exit 1
+fi
+export -f tlc 2>/dev/null || true
+
 for cfg in "$root"/specs/*.cfg; do
   name="$(basename "${cfg%.cfg}")"
   expected_file="$root/specs/$name.expect"
