@@ -64,7 +64,9 @@ export const ipynbCleanTool = tool({
           removedExecutionCounts: result.removedExecutionCounts,
           removedWidgets: result.removedWidgets,
           removedImages: result.removedImages,
-          normalizedSources: result.normalizedSources
+          normalizedSources: result.normalizedSources,
+          writeMode: result.writeMode,
+          writeModeReason: result.writeModeReason
         }
       }
     } catch (err) {

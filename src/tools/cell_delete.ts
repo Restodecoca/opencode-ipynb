@@ -45,7 +45,9 @@ export const ipynbCellDeleteTool = tool({
           filePath: result.absPath,
           deletedIndex: result.deletedIndex,
           deletedType: result.deletedType,
-          totalCells: result.totalCells
+          totalCells: result.totalCells,
+          writeMode: result.writeMode,
+          writeModeReason: result.writeModeReason
         }
       }
     } catch (err) {

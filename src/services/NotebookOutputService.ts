@@ -20,6 +20,7 @@ import {
 } from "./PermissionService.js"
 import { formatOutputs, type OutputFormatOptions } from "../format/outputs.js"
 import type { CellRaw, CodeCellRaw } from "../domain/cell.js"
+import type { PatchFailureReason, WriteMode } from "../utils/json.js"
 
 export type OutputOperation = "list" | "read" | "read_error" | "clear_cell" | "clear_all"
 
@@ -66,6 +67,8 @@ export interface ClearOutputsResult {
   readonly clearedCells: number
   readonly removedOutputs: number
   readonly removedExecutionCounts: number
+  readonly writeMode: WriteMode | undefined
+  readonly writeModeReason?: PatchFailureReason | undefined
 }
 
 export interface NotebookOutputServiceShape {
@@ -376,7 +379,8 @@ const makeOutputImpl = (
                 absPath: abs,
                 clearedCells: 0,
                 removedOutputs: 0,
-                removedExecutionCounts: 0
+                removedExecutionCounts: 0,
+                writeMode: undefined
               }
             }
             const code = cell as CodeCellRaw
@@ -388,7 +392,8 @@ const makeOutputImpl = (
                 absPath: abs,
                 clearedCells: 0,
                 removedOutputs: 0,
-                removedExecutionCounts: 0
+                removedExecutionCounts: 0,
+                writeMode: undefined
               }
             }
             const lexicalPaths = yield* permSvc.aliases(abs)
@@ -413,7 +418,7 @@ const makeOutputImpl = (
             cells[cellIndex] = newCell
             const newNotebook = { ...notebook, cells }
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
-            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+            const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
               previousText: snapshot.text
@@ -423,7 +428,9 @@ const makeOutputImpl = (
               absPath: abs,
               clearedCells: 1,
               removedOutputs,
-              removedExecutionCounts: removedExec
+              removedExecutionCounts: removedExec,
+              writeMode: write.mode,
+              writeModeReason: write.reason
             }
           })
         )
@@ -465,7 +472,8 @@ const makeOutputImpl = (
                 absPath: abs,
                 clearedCells: 0,
                 removedOutputs: 0,
-                removedExecutionCounts: 0
+                removedExecutionCounts: 0,
+                writeMode: undefined
               }
             }
             const lexicalPaths = yield* permSvc.aliases(abs)
@@ -487,7 +495,7 @@ const makeOutputImpl = (
             })
             const newNotebook = { ...notebook, cells }
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
-            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+            const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
               previousText: snapshot.text
@@ -497,7 +505,9 @@ const makeOutputImpl = (
               absPath: abs,
               clearedCells: cleared,
               removedOutputs,
-              removedExecutionCounts: removedExec
+              removedExecutionCounts: removedExec,
+              writeMode: write.mode,
+              writeModeReason: write.reason
             }
           })
         )

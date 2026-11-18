@@ -48,7 +48,9 @@ export const ipynbCellMoveTool = tool({
           fromIndex: result.fromIndex,
           toIndex: result.toIndex,
           cellType: result.cellType,
-          totalCells: result.totalCells
+          totalCells: result.totalCells,
+          writeMode: result.writeMode,
+          writeModeReason: result.writeModeReason
         }
       }
     } catch (err) {

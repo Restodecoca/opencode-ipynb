@@ -15,6 +15,7 @@ import {
 } from "./PermissionService.js"
 import type { CellRaw, CodeCellRaw } from "../domain/cell.js"
 import type { NotebookRaw } from "../domain/notebook.js"
+import type { PatchFailureReason, WriteMode } from "../utils/json.js"
 
 export interface CleanOptions {
   readonly clearOutputs: boolean
@@ -35,6 +36,8 @@ export interface CleanResult {
   readonly removedImages: number
   readonly normalizedSources: number
   readonly notebook: NotebookRaw
+  readonly writeMode: WriteMode | undefined
+  readonly writeModeReason?: PatchFailureReason | undefined
 }
 
 export interface NotebookCleanServiceShape {
@@ -235,7 +238,8 @@ const makeCleanImpl = (
                 removedWidgets: 0,
                 removedImages: 0,
                 normalizedSources: 0,
-                notebook
+                notebook,
+                writeMode: undefined
               }
             }
 
@@ -262,7 +266,7 @@ const makeCleanImpl = (
             })
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
-            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+            const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
               previousText: snapshot.text
@@ -277,7 +281,9 @@ const makeCleanImpl = (
               removedWidgets,
               removedImages,
               normalizedSources,
-              notebook: newNotebook
+              notebook: newNotebook,
+              writeMode: write.mode,
+              writeModeReason: write.reason
             }
           })
         )

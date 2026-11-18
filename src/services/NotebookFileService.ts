@@ -467,6 +467,17 @@ const buildFileService = (
             }
             if (existingMode !== undefined) await fsp.chmod(tmp, existingMode)
             await replaceFile(tmp, target, warningSink)
+            if (previousText !== undefined && rewrite.mode !== "patched") {
+              warningSink?.add(
+                warningFrom(
+                  "json-patch",
+                  new Error(
+                    `the notebook was rewritten from scratch instead of patched (${rewrite.reason ?? "fallback"})`
+                  ),
+                  `reformatted ${filePath}`
+                )
+              )
+            }
           } catch (err) {
             try {
               await fsp.unlink(tmp)

@@ -116,7 +116,9 @@ export const ipynbRunTool = tool({
           filePath: result.absPath,
           executedCells: result.executedCells.slice(0, 1_000),
           durationMs: result.durationMs,
-          saved: result.saved
+          saved: result.saved,
+          writeMode: result.writeMode,
+          writeModeReason: result.writeModeReason
         }
       }
     } catch (err) {

@@ -34,7 +34,7 @@ export interface EditResult {
   readonly clearedOutputs: boolean
   readonly changed: boolean
   readonly notebook: NotebookRaw
-  readonly writeMode: WriteMode
+  readonly writeMode: WriteMode | undefined
   readonly writeModeReason?: PatchFailureReason | undefined
 }
 
@@ -45,6 +45,8 @@ export interface InsertResult {
   readonly cellType: "code" | "markdown" | "raw"
   readonly totalCells: number
   readonly preview: string
+  readonly writeMode: WriteMode
+  readonly writeModeReason?: PatchFailureReason | undefined
 }
 
 export interface DeleteResult {
@@ -54,6 +56,8 @@ export interface DeleteResult {
   readonly deletedType: "code" | "markdown" | "raw"
   readonly deletedPreview: string
   readonly totalCells: number
+  readonly writeMode: WriteMode
+  readonly writeModeReason?: PatchFailureReason | undefined
 }
 
 export interface MoveResult {
@@ -63,6 +67,8 @@ export interface MoveResult {
   readonly toIndex: number
   readonly cellType: CellType
   readonly totalCells: number
+  readonly writeMode: WriteMode | undefined
+  readonly writeModeReason?: PatchFailureReason | undefined
 }
 
 export type CellType = "code" | "markdown" | "raw"
@@ -237,7 +243,7 @@ const makeEditImpl = (
                 clearedOutputs: false,
                 changed: false,
                 notebook,
-                writeMode: "patched" as const
+                writeMode: undefined
               }
             }
 
@@ -378,7 +384,7 @@ const makeEditImpl = (
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
-            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+            const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
               previousText: snapshot.text
@@ -391,7 +397,9 @@ const makeEditImpl = (
               cellIndex: targetIdx,
               cellType,
               totalCells: total + 1,
-              preview
+              preview,
+              writeMode: write.mode,
+              writeModeReason: write.reason
             }
           })
         )
@@ -461,7 +469,7 @@ const makeEditImpl = (
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
-            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+            const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
               previousText: snapshot.text
@@ -474,7 +482,9 @@ const makeEditImpl = (
               deletedIndex: cellIndex,
               deletedType: cellType,
               deletedPreview,
-              totalCells: total - 1
+              totalCells: total - 1,
+              writeMode: write.mode,
+              writeModeReason: write.reason
             }
           })
         )
@@ -538,7 +548,8 @@ const makeEditImpl = (
                 fromIndex,
                 toIndex: clampedTo,
                 cellType,
-                totalCells: total
+                totalCells: total,
+                writeMode: undefined
               }
             }
 
@@ -567,7 +578,7 @@ const makeEditImpl = (
             const newNotebook: NotebookRaw = { ...notebook, cells }
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
-            yield* fileSvc.writeAtomic(pinned, newNotebook, {
+            const write = yield* fileSvc.writeAtomic(pinned, newNotebook, {
               noFollowFinal: true,
               format: snapshot.format,
               previousText: snapshot.text
@@ -579,7 +590,9 @@ const makeEditImpl = (
               fromIndex,
               toIndex: clampedTo,
               cellType,
-              totalCells: total
+              totalCells: total,
+              writeMode: write.mode,
+              writeModeReason: write.reason
             }
           })
         )

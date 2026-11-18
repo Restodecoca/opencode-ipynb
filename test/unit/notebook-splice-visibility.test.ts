@@ -64,6 +64,23 @@ describe("write mode is observable", () => {
     }
   })
 
+  it("reports no write mode when the edit changes nothing", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "splice-"))
+    const file = path.join(dir, "n.ipynb")
+    fs.writeFileSync(file, notebook)
+    const before = fs.readFileSync(file, "utf8")
+    try {
+      const result = await run(
+        setup(dir).editCell(file, { cellIndex: 0, source: "# A", clearOutputs: "never" })
+      )
+      expect(result.changed).toBe(false)
+      expect(result.writeMode).toBeUndefined()
+      expect(fs.readFileSync(file, "utf8")).toBe(before)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("reports fallback with a reason when the splice cannot be trusted", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "splice-"))
     const file = path.join(dir, "n.ipynb")

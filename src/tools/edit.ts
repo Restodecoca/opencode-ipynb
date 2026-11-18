@@ -42,7 +42,8 @@ export const ipynbEditTool = tool({
           cellType: result.cellType,
           clearedOutputs: result.clearedOutputs,
           changed: result.changed,
-          writeMode: result.writeMode
+          writeMode: result.writeMode,
+          writeModeReason: result.writeModeReason
         }
       }
     } catch (err) {

@@ -13,6 +13,7 @@ import {
 } from "../domain/errors.js"
 import type { NotebookFileServiceShape } from "./NotebookFileService.js"
 import type { PathServiceShape } from "./PathService.js"
+import type { PatchFailureReason, WriteMode } from "../utils/json.js"
 import {
   type PermissionServiceShape
 } from "./PermissionService.js"
@@ -67,6 +68,8 @@ export interface ExecutionResult {
   readonly saved: boolean
   readonly response: RunResponse
   readonly warnings?: ReadonlyArray<Warning>
+  readonly writeMode?: WriteMode | undefined
+  readonly writeModeReason?: PatchFailureReason | undefined
 }
 
 export interface NotebookExecutionServiceShape {
@@ -851,6 +854,8 @@ const makeExecutionImpl = (
         const truncated = truncateRunResponse(response, request.maxOutputChars)
 
         let wrote = false
+        let writeMode: WriteMode | undefined
+        let writeModeReason: PatchFailureReason | undefined
         if (request.save) {
           if (response.outputs.some((output) => output.rawOutputsOmitted === true)) {
             return yield* new NotebookValidationError({
@@ -897,12 +902,14 @@ const makeExecutionImpl = (
                   }
                   const newCells = notebook.cells.map((c, i) => cellsByIndex.get(i) ?? c)
                   const newNotebook: NotebookRaw = { ...notebook, cells: newCells }
-                  yield* fileSvc.writeAtomic(kernelPath, newNotebook, {
+                  const write = yield* fileSvc.writeAtomic(kernelPath, newNotebook, {
                     noFollowFinal: true,
                     format: snapshot.format,
                     previousText: snapshot.text
                   })
                   wrote = true
+                  writeMode = write.mode
+                  writeModeReason = write.reason
                 }
               }
             })
@@ -916,7 +923,9 @@ const makeExecutionImpl = (
           executedCells: response.executedCells.slice(0, 10_000),
           durationMs,
           saved: request.save && wrote,
-          response: truncated
+          response: truncated,
+          writeMode,
+          writeModeReason
         })
       }),
     reportEnv: (filePath, options) =>

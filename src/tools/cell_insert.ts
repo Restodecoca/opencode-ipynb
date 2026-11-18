@@ -56,7 +56,9 @@ export const ipynbCellInsertTool = tool({
           filePath: result.absPath,
           cellIndex: result.cellIndex,
           cellType: result.cellType,
-          totalCells: result.totalCells
+          totalCells: result.totalCells,
+          writeMode: result.writeMode,
+          writeModeReason: result.writeModeReason
         }
       }
     } catch (err) {

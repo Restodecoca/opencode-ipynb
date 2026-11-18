@@ -12,6 +12,7 @@ import { makePathService } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
 import { makePythonService, type PythonServiceShape } from "../../src/services/PythonService.js"
 import { makeWarningSink } from "../../src/utils/warnings.js"
+import { DEFAULT_NOTEBOOK_FORMAT } from "../../src/utils/json.js"
 import type { NotebookRaw } from "../../src/domain/notebook.js"
 import {
   cleanupVirtualDocuments,
@@ -420,6 +421,36 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
       expect(warnings.length).toBeGreaterThanOrEqual(1)
       expect(warnings.every((warning) => warning.source === "path-resolution")).toBe(true)
       expect(warnings.some((warning) => (warning.detail ?? "").includes("n.ipynb"))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("announces a fallback rewrite through the warning sink", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-fallback-"))
+    const file = path.join(dir, "n.ipynb")
+    const broken = `{ not json`
+    fs.writeFileSync(file, broken)
+    const sink = makeWarningSink()
+    const svc = makeNotebookFileService({ worktree: dir, warningSink: sink })
+    try {
+      const outcome = await Effect.runPromise(
+        svc.writeAtomic(file, {
+          ...notebook,
+          cells: [{ ...notebook.cells[0]!, source: "x = 2" }]
+        } as unknown as NotebookRaw, {
+          format: DEFAULT_NOTEBOOK_FORMAT,
+          previousText: broken
+        })
+      )
+      expect(outcome.mode).toBe("fallback")
+      expect(outcome.reason).toBe("parse-failed")
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toBeDefined()
+      const warnings = sink.drain()
+      expect(warnings.length).toBe(1)
+      expect(warnings[0]?.source).toBe("json-patch")
+      expect(warnings[0]?.message).toContain("rewritten from scratch")
+      expect(warnings[0]?.message).toContain("parse-failed")
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
