@@ -4,6 +4,7 @@ import { z } from "zod"
 import { rethrowPermissionDenied, runToolEffect, tool } from "../tool.js"
 import type { ToolContext } from "../tool.js"
 import { buildServices } from "../services/index.js"
+import { assertReadPermission } from "./_readPermission.js"
 import { errorToMessage } from "../domain/errors.js"
 
 const args = {
@@ -29,6 +30,7 @@ export const ipynbCellInsertTool = tool({
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
     const services = buildServices(context, { warningSink: context.warningSink })
     try {
+      await assertReadPermission(context, input.filePath)
       const result = await runToolEffect(
         services.edit.insertCell(
           input.filePath,
