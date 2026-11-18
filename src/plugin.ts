@@ -174,6 +174,17 @@ const plugin: Plugin.Plugin = {
         attachNotebookWarnings(result, sink.drain())
         return
       }
+      if (
+        !(await isPyrightAvailable(
+          effectiveOptions.pyrightPath,
+          effectiveOptions.diagnosticsTimeoutMs,
+          undefined,
+          { warningSink: sink }
+        ))
+      ) {
+        attachNotebookWarnings(result, sink.drain())
+        return
+      }
       let permissionDenied = false
       try {
         document ??= await loadDocument(filePath)
@@ -212,17 +223,6 @@ const plugin: Plugin.Plugin = {
         } catch (error) {
           permissionDenied = true
           throw error
-        }
-        if (
-          !(await isPyrightAvailable(
-            effectiveOptions.pyrightPath,
-            effectiveOptions.diagnosticsTimeoutMs,
-            undefined,
-            { warningSink: sink }
-          ))
-        ) {
-          attachNotebookWarnings(result, sink.drain())
-          return
         }
         try {
           await context.permission.assert({
