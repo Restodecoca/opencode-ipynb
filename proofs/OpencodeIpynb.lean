@@ -1,4 +1,6 @@
+import OpencodeIpynb.ApplyEdits
 import OpencodeIpynb.FormatSource
 import OpencodeIpynb.InsertSorted
+import OpencodeIpynb.MarkdownSafe
 import OpencodeIpynb.NotebookDefaults
 import OpencodeIpynb.SourceLines
