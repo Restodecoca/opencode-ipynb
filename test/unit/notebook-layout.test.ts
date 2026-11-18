@@ -1140,6 +1140,26 @@ describe("defaults respect the file's existing key order", () => {
     expect(out["\u{10000}b" as keyof typeof out]).toBe(2)
   })
 
+  it("is idempotent: defaulting a defaulted notebook changes nothing", async () => {
+    const sorted = await apply({
+      cells: [
+        { cell_type: "code", execution_count: null, metadata: {}, source: ["x"] }
+      ],
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+    expect(await apply(sorted)).toEqual(sorted)
+    const unsorted = await apply({
+      cells: [
+        { source: ["x"], metadata: {}, execution_count: null, cell_type: "code" }
+      ],
+      nbformat_minor: 5,
+      nbformat: 4
+    })
+    expect(await apply(unsorted)).toEqual(unsorted)
+    expect(JSON.stringify(await apply(sorted))).toBe(JSON.stringify(sorted))
+  })
+
   it("leaves an object that already has the key untouched", async () => {
     const cell = {
       cell_type: "code",
