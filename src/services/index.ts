@@ -109,17 +109,20 @@ const getOrCreateSharedKernelManager = (
     opts.pythonPath ?? "",
     opts.helperPath,
     opts.workingDirectory,
-    opts.defaultTimeoutMs,
-    opts.warningSink === undefined ? "" : "sink"
+    opts.defaultTimeoutMs
   ])
   const existing = managers.get(key)
-  if (existing) return existing
+  if (existing) {
+    if (opts.warningSink !== undefined) existing.setWarningSink?.(opts.warningSink)
+    return existing
+  }
+  const sinkTarget: { sink?: WarningSink | undefined } = { sink: opts.warningSink }
   const manager = makeKernelManager({
     pythonPath: opts.pythonPath ?? "python",
     helperPath: opts.helperPath,
     workingDirectory: opts.workingDirectory,
     defaultTimeoutMs: opts.defaultTimeoutMs,
-    ...(opts.warningSink === undefined ? {} : { warningSink: opts.warningSink })
+    sinkTarget
   })
   managers.set(key, manager)
   return manager

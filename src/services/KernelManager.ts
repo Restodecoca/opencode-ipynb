@@ -24,6 +24,7 @@ export interface KernelManagerOptions {
   readonly workingDirectory: string | undefined
   readonly defaultTimeoutMs: number
   readonly warningSink?: WarningSink
+  readonly sinkTarget?: { sink?: WarningSink | undefined }
 }
 
 export interface KernelRuntimeOptions {
@@ -211,7 +212,8 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     }
   }
   const kernelLocks = new Map<string, Promise<void>>()
-  const sink = opts.warningSink
+  const sinkTarget = opts.sinkTarget ?? { sink: opts.warningSink }
+  const currentSink = (): WarningSink | undefined => sinkTarget.sink
   const reported = new Set<string>()
   let totalRequests = 0
 
@@ -222,6 +224,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     reported.add(key)
     if (state.warnings.length >= KERNEL_WARNINGS_MAX) state.warnings.shift()
     state.warnings.push(warning)
+    const sink = currentSink()
     if (sink !== undefined) sink.add(warning)
     for (const pending of state.pending.values()) {
       if (pending.sink !== undefined && pending.sink !== sink) pending.sink.add(warning)
@@ -230,7 +233,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
 
   const stopKernelInBackground = (filePath: string): void => {
     void killKernel(filePath).catch((error: unknown) => {
-      sink?.add(warningFrom("cleanup", error, `stopping the warm kernel for ${filePath}`))
+      currentSink()?.add(warningFrom("cleanup", error, `stopping the warm kernel for ${filePath}`))
     })
   }
 
@@ -677,7 +680,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       const key = `path|${filePath}|${code ?? "EIO"}`
       if (code !== "ENOENT" && !reported.has(key)) {
         reported.add(key)
-        sink?.add(warningFrom("path-resolution", error, `kernel key for ${filePath}`))
+        currentSink()?.add(warningFrom("path-resolution", error, `kernel key for ${filePath}`))
       }
       canonical = filePath
     }
@@ -909,7 +912,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         return realpathSync(filePath)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          sink?.add(
+          currentSink()?.add(
             warningFrom("path-resolution", error, `kernel lookup for ${filePath}`)
           )
         }
@@ -969,7 +972,10 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     restart,
     shutdown,
     disposeAll,
-    stats
+    stats,
+    setWarningSink: (next) => {
+      sinkTarget.sink = next
+    }
   }
 }
 
@@ -989,4 +995,5 @@ export interface KernelManagerShape {
   readonly shutdown: (filePath: string) => Effect.Effect<void, never>
   readonly disposeAll: () => Effect.Effect<void, never>
   readonly stats: () => KernelManagerStats
+  readonly setWarningSink?: (sink: WarningSink | undefined) => void
 }
