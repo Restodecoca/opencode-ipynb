@@ -202,6 +202,14 @@ const withTimeout = <T>(
 
 export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShape => {
   const states = new Map<string, KernelState>()
+  const canonicalAliases = new Map<string, string>()
+
+  const forgetState = (filePath: string): void => {
+    states.delete(filePath)
+    for (const [alias, target] of canonicalAliases) {
+      if (target === filePath) canonicalAliases.delete(alias)
+    }
+  }
   const kernelLocks = new Map<string, Promise<void>>()
   const sink = opts.warningSink
   const reported = new Set<string>()
@@ -490,7 +498,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         }
         state.pending.clear()
         killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
-        if (states.get(state.filePath) === state) states.delete(state.filePath)
+        if (states.get(state.filePath) === state) forgetState(state.filePath)
         return
       }
       killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
@@ -499,14 +507,14 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         "kernel subprocess exited",
         `code=${code ?? "?"} signal=${signal ?? "none"}`
       )
-      if (states.get(state.filePath) === state) states.delete(state.filePath)
+      if (states.get(state.filePath) === state) forgetState(state.filePath)
     })
 
     proc.on("error", (err) => {
       state.alive = false
       killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
       failAllPending(state, "kernel subprocess error", err.message)
-      if (states.get(state.filePath) === state) states.delete(state.filePath)
+      if (states.get(state.filePath) === state) forgetState(state.filePath)
     })
 
     return state
@@ -571,7 +579,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       await killKernelUnlocked(filePath)
     }
     if (existing && !existing.alive) {
-      states.delete(filePath)
+      forgetState(filePath)
     }
     const state = spawnKernel(filePath, runtime, request.kernel)
     states.set(filePath, state)
@@ -649,8 +657,11 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
   const canonicalPathForKernel = async (
     filePath: string
   ): Promise<string> => {
+    let canonical: string
+    let resolved = false
     try {
-      return await fsp.realpath(filePath)
+      canonical = await fsp.realpath(filePath)
+      resolved = true
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       const key = `path|${filePath}|${code ?? "EIO"}`
@@ -658,19 +669,29 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         reported.add(key)
         sink?.add(warningFrom("path-resolution", error, `kernel key for ${filePath}`))
       }
-      return filePath
+      canonical = filePath
     }
+    if (resolved) {
+      canonicalAliases.set(filePath, canonical)
+      canonicalAliases.set(canonical, canonical)
+    }
+    return canonical
   }
 
   const killKernel = async (inputPath: string): Promise<void> => {
-    const filePath = await canonicalPathForKernel(inputPath)
+    const recorded = canonicalAliases.get(inputPath)
+    const canonical = await canonicalPathForKernel(inputPath)
+    const filePath =
+      !states.has(canonical) && recorded !== undefined && states.has(recorded)
+        ? recorded
+        : canonical
     return withKernelLock(filePath, () => killKernelUnlocked(filePath))
   }
 
   const killKernelUnlocked = async (filePath: string): Promise<void> => {
     const state = states.get(filePath)
     if (!state) return
-    states.delete(filePath)
+    forgetState(filePath)
     if (!state.alive) return
     await sendShutdown(state)
     if (state.alive) {
