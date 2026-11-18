@@ -209,9 +209,6 @@ theorem strLt_conn (a b : String) (h : ¬ strLt a b = true) :
   · exact Or.inl heq
   · exact Or.inr (by simp [strLt, hgt])
 
-def bmpSafe (s : String) : Prop :=
-  ∀ c ∈ s.toList, c.toNat < 0xD800 ∨ (0xDFFF < c.toNat ∧ c.toNat ≤ 0xFFFF)
-
 def unitLtFrom : List Nat → List Nat → Bool
   | [], [] => false
   | [], _ :: _ => true
@@ -255,8 +252,14 @@ theorem insertSortedBy_units_sorted (keys : List (List Nat)) (key : List Nat)
   insertSortedBy_sorted unitLtFrom hasKey (fun _ _ hmem => hmem) unitLtFrom_conn
     keys key hnc hs
 
-theorem insertSortedBy_string_sorted (keys : List String) (key : String)
-    (_hkeys : ∀ k ∈ keys, bmpSafe k) (_hkey : bmpSafe key)
-    (hnc : ¬ hasKey keys key = true) (hs : isSortedBy strLt keys = true) :
-    isSortedBy strLt (insertSortedBy strLt hasKey keys key) = true :=
-  insertSortedBy_sorted strLt hasKey (fun _ _ hmem => hmem) strLt_conn keys key hnc hs
+/- The shipped `insertSorted` compares UTF-16 code units, which is lexicographic
+   order on the unit sequence (an astral character becomes a surrogate pair).
+   `utf16Units` maps a string to that sequence and `insertSortedBy_units_sorted`
+   proves sortedness for exactly that order. Lean's own `String` `<` is UTF-8
+   byte order, so it is deliberately not used as the production order here. -/
+def utf16Units (s : String) : List Nat :=
+  (s.toList.map fun c =>
+    if c.toNat < 0x10000 then [c.toNat]
+    else
+      let n := c.toNat - 0x10000
+      [0xD800 + n / 0x400, 0xDC00 + n % 0x400]).flatten
