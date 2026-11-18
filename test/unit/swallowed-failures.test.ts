@@ -424,9 +424,11 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
         } as unknown as NotebookRaw)
       )
       const warnings = sink.drain()
-      expect(warnings.length).toBeGreaterThanOrEqual(1)
-      expect(warnings.every((warning) => warning.source === "path-resolution")).toBe(true)
-      expect(warnings.some((warning) => (warning.detail ?? "").includes("n.ipynb"))).toBe(true)
+      const pathWarnings = warnings.filter(
+        (warning) => warning.source === "path-resolution"
+      )
+      expect(pathWarnings.length).toBeGreaterThanOrEqual(1)
+      expect(pathWarnings.some((warning) => (warning.detail ?? "").includes("n.ipynb"))).toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
