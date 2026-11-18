@@ -186,14 +186,38 @@ size; a superlinear result fails the build. CI runs both.
 
 ### Deliberately silent sites
 
-Three kinds of failure stay unreported on purpose, and a review should not
-flag them:
+These failures stay unreported on purpose; every other swallowed failure
+must reach a `WarningSink`. `test/unit/silence-allowlist.test.ts` scans the
+whole source — including multi-line catch blocks, which a line-based scan
+cannot see — and fails unless each silent site appears with its exact count:
 
-- Chaining an existing lock (`await previous.catch(...)`) — the previous holder
-  already ran; there is no intent to defeat.
-- Closing a read-only file descriptor we are done with — no data can be lost and
-  there is no remedy.
-- The host's `context.progress()` — a refused progress update is not a plugin
-  failure.
+- Chaining an existing lock (`await previous.catch(() => {})` in
+  `KernelManager` and `notebook-diagnostics`) — the previous holder already
+  ran; there is no intent to defeat.
+- Closing a read-only file descriptor we are done with
+  (`NotebookFileService`) — no data can be lost and there is no remedy.
+- The host's `context.progress()` (`plugin-v2`) — a refused progress update
+  is not a plugin failure.
+- Existence and executability probes (`PythonService` ×3, the PATH scan in
+  `notebook-diagnostics`, the PATH scan in `plugin-options`) — a candidate
+  that is missing or not executable is the normal negative result of a
+  probe, not a failure worth reporting.
+- Realpath fallbacks (`diagnosticHash` in `notebook-diagnostics`,
+  `virtual-materialize`) — when realpath fails, the caller falls back to the
+  lexical path, which is its documented behavior.
 
-Everything else must reach a `WarningSink`.
+Also deliberate, though not empty-catch sites the scan can count:
+
+- `loadNotebookDocument` dropping a failed `resolvePythonPath` — the hook
+  path has no user to tell and interpreter auto-discovery continues; the
+  tool paths surface a bad `pythonPath` loudly through `pythonPathError`.
+
+Everything else must reach a `WarningSink`, and the cases below announce
+themselves explicitly rather than staying silent:
+
+- A failed patch falling back to a full rewrite records a `json-patch`
+  warning and the tool reports `writeMode`/`writeModeReason` metadata.
+- Kill-path failures are recorded through the `cleanup` warning source; a
+  kill of an already-dead process (ESRCH) is success, not a failure.
+- An invalid `OPENCODE_IPYNB_OPTIONS` is surfaced through the services'
+  `envOptionsError` and a warning section in `ipynb_doctor`.
