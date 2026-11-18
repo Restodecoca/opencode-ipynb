@@ -13,11 +13,16 @@ interface LiteralNode {
   readonly value: unknown
 }
 
+interface ItemSpan {
+  readonly start: number
+  readonly end: number
+}
+
 interface ArrayNode {
   readonly kind: "array"
   readonly start: number
   readonly end: number
-  readonly items: ReadonlyArray<JsonNode>
+  readonly items: ReadonlyArray<ItemSpan>
   readonly value: ReadonlyArray<unknown>
 }
 
@@ -65,6 +70,46 @@ const parseStringSpan = (text: string, start: number): number => {
 export const MAX_JSON_DEPTH = 512
 
 class DepthExceededError extends RangeError {}
+
+const skipScalar = (text: string, from: number): number => {
+  const char = text[from]
+  if (char === '"') return parseStringSpan(text, from)
+  for (const literal of ["true", "false", "null"] as const) {
+    if (text.startsWith(literal, from)) return from + literal.length
+  }
+  NUMBER.lastIndex = from
+  const match = NUMBER.exec(text)
+  if (match !== null) return from + match[0].length
+  throw new SyntaxError(`unexpected token at ${from}`)
+}
+
+const skipValue = (text: string, from: number, depth = 0): number => {
+  if (depth > MAX_JSON_DEPTH) {
+    throw new DepthExceededError(
+      `notebook nesting exceeds the supported depth of ${MAX_JSON_DEPTH}`
+    )
+  }
+  const start = skipWhitespace(text, from)
+  const char = text[start]
+  if (char !== "{" && char !== "[") return skipScalar(text, start)
+  const close = char === "{" ? "}" : "]"
+  let pos = skipWhitespace(text, start + 1)
+  if (text[pos] === close) return pos + 1
+  for (;;) {
+    if (char === "{") {
+      const keyEnd = parseStringSpan(text, skipWhitespace(text, pos))
+      pos = skipWhitespace(text, keyEnd)
+      pos = skipWhitespace(text, pos + 1)
+    }
+    pos = skipWhitespace(text, skipValue(text, pos, depth + 1))
+    if (text[pos] === ",") {
+      pos = skipWhitespace(text, pos + 1)
+      continue
+    }
+    if (text[pos] === close) return pos + 1
+    throw new SyntaxError(`expected , or ${close}`)
+  }
+}
 
 const parseNode = (
   text: string,
@@ -126,7 +171,7 @@ const parseNode = (
     }
   }
   if (char === "[") {
-    const items: JsonNode[] = []
+    const items: ItemSpan[] = []
     let pos = skipWhitespace(text, start + 1)
     if (text[pos] === "]") {
       return {
@@ -138,10 +183,10 @@ const parseNode = (
       }
     }
     for (;;) {
-      const childKnown = Array.isArray(known) ? known[items.length] : undefined
-      const value = parseNode(text, pos, depth + 1, childKnown)
-      items.push(value)
-      pos = skipWhitespace(text, value.end)
+      const valueStart = skipWhitespace(text, pos)
+      const valueEnd = skipValue(text, valueStart, depth + 1)
+      items.push({ start: valueStart, end: valueEnd })
+      pos = skipWhitespace(text, valueEnd)
       if (text[pos] === ",") {
         pos += 1
         continue
@@ -382,7 +427,11 @@ const patchArray = (
   indent: string
 ): void => {
   const multiline = isMultiline(layout.text, node)
-  const oldItems = node.items.map((item) => item.value)
+  const oldItems = node.value
+  const nodeAt = (index: number): JsonNode => {
+    const span = node.items[index]!
+    return parseNode(layout.text, span.start, 0, oldItems[index])
+  }
   const prefix = prefixLength(oldItems, value)
   const suffix = suffixLength(oldItems, value, prefix)
   const oldMiddle = node.items.slice(prefix, node.items.length - suffix)
@@ -431,7 +480,7 @@ const patchArray = (
       patchNode(
         newMiddle[i],
         oldItems[prefix + i],
-        oldMiddle[i]!,
+        nodeAt(prefix + i),
         edits,
         layout,
         childIndent

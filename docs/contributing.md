@@ -262,7 +262,8 @@ themselves explicitly rather than staying silent:
   unreproducible rather than fixed, so a future occurrence should be captured
   with `bun test 2>&1 | tee run.log` and the failing test named.
 - **Write-path memory.** A one-cell edit in a 17 MB / 64k-cell notebook peaks
-  around 250-300 MB RSS. Profiling shows the patcher's offset tree accounts for
-  most of the transient allocation (~240 MB allocated, ~27 MB retained after a
-  forced GC); `scripts/bench-writes.ts` asserts a 350 MB ceiling so a
-  regression is caught, but a lazy node tree would be needed to go lower.
+  around 170-220 MB RSS. Array nodes store item spans and only materialize the
+  child nodes for the span that actually differs, which is what brought the
+  patch allocation down from ~240 MB to ~120 MB; `scripts/bench-writes.ts`
+  asserts a 250 MB ceiling, which the previous eager tree exceeded. Retained
+  memory after a forced GC is ~25 MB, so the rest is transient garbage.
