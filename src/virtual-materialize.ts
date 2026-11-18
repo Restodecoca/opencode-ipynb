@@ -334,6 +334,7 @@ export const cleanupVirtualDocuments = async (
   if (rootReal === undefined) return
   const tracked = activeSidecars.get(rootReal)
   if (tracked !== undefined) {
+    const failed = new Set<string>()
     await Promise.all(
       [...tracked].map(async (file) => {
         const parentReal = await fsp
@@ -354,14 +355,22 @@ export const cleanupVirtualDocuments = async (
           }
           return undefined
         })
-        if (stat !== undefined && !stat.isDirectory()) {
-          await fsp.rm(target, { force: true }).catch((error: unknown) => {
+        if (stat === undefined || stat.isDirectory()) return
+        const removed = await fsp.rm(target, { force: true }).then(
+          () => true,
+          (error: unknown) => {
             sink?.add(warningFrom("sidecar-cleanup", error, `removing ${target}`))
-          })
-        }
+            return false
+          }
+        )
+        if (!removed) failed.add(file)
       })
     )
-    activeSidecars.delete(rootReal)
+    const latest = activeSidecars.get(rootReal) ?? tracked
+    for (const file of tracked) {
+      if (!failed.has(file)) latest.delete(file)
+    }
+    if (latest.size === 0) activeSidecars.delete(rootReal)
   }
   await cleanupLegacyDirectory(rootReal, sink)
 }
