@@ -593,7 +593,7 @@ const patchNode = (
   })
 }
 
-const applyEdits = (text: string, edits: ReadonlyArray<Edit>): string | undefined => {
+export const applyEdits = (text: string, edits: ReadonlyArray<Edit>): string | undefined => {
   if (edits.length === 0) return text
   const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end)
   const segments: string[] = []
