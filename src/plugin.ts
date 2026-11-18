@@ -4,6 +4,7 @@ import { disposeSharedKernelManager, resolveOptionsFromEnv } from "./services/in
 import { registerV2Tools } from "./plugin-v2.js"
 import { parsePluginOptions } from "./plugin-options.js"
 import {
+  resolvePyrightCommand,
   diagnoseNotebook,
   diagnosticFallbackTempPath,
   diagnosticTempPath,
@@ -174,17 +175,6 @@ const plugin: Plugin.Plugin = {
         attachNotebookWarnings(result, sink.drain())
         return
       }
-      if (
-        !(await isPyrightAvailable(
-          effectiveOptions.pyrightPath,
-          effectiveOptions.diagnosticsTimeoutMs,
-          undefined,
-          { warningSink: sink }
-        ))
-      ) {
-        attachNotebookWarnings(result, sink.drain())
-        return
-      }
       let permissionDenied = false
       try {
         document ??= await loadDocument(filePath)
@@ -223,6 +213,46 @@ const plugin: Plugin.Plugin = {
         } catch (error) {
           permissionDenied = true
           throw error
+        }
+        let pyrightBinary: string | undefined
+        try {
+          pyrightBinary = resolvePyrightCommand(effectiveOptions.pyrightPath).command
+        } catch {
+          pyrightBinary = undefined
+        }
+        if (
+          pyrightBinary !== undefined &&
+          !lspPaths.includes(pyrightBinary)
+        ) {
+          try {
+            await context.permission.assert({
+              sessionID: event.sessionID as never,
+              agent: event.agent as never,
+              source: {
+                type: "tool",
+                messageID: event.messageID as never,
+                id: event.id as never
+              },
+              action: "lsp",
+              resources: [pyrightBinary],
+              save: [],
+              metadata: { filePath: document.filePath, operation: "pyright-binary" }
+            })
+          } catch (error) {
+            permissionDenied = true
+            throw error
+          }
+        }
+        if (
+          !(await isPyrightAvailable(
+            effectiveOptions.pyrightPath,
+            effectiveOptions.diagnosticsTimeoutMs,
+            undefined,
+            { warningSink: sink }
+          ))
+        ) {
+          attachNotebookWarnings(result, sink.drain())
+          return
         }
         try {
           await context.permission.assert({
