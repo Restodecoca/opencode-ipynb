@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { Effect } from "effect"
 import * as fs from "node:fs"
+import * as fsp from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import { makeKernelManager } from "../../src/services/KernelManager.js"
@@ -11,6 +12,7 @@ import { makePathService } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
 import { makePythonService, type PythonServiceShape } from "../../src/services/PythonService.js"
 import { makeWarningSink } from "../../src/utils/warnings.js"
+import type { NotebookRaw } from "../../src/domain/notebook.js"
 import {
   cleanupVirtualDocuments,
   hasMaterializedDocument,
@@ -380,6 +382,73 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
         "path-resolution"
       ])
       expect(result.warnings?.[0]?.detail).toContain("n.ipynb")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("records a warning when the write-path realpath probe fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-write-realpath-"))
+    const file = path.join(dir, "n.ipynb")
+    fs.writeFileSync(file, JSON.stringify(notebook))
+    const original = fsp.realpath
+    const spy = spyOn(fsp, "realpath").mockImplementation(((
+      target: fs.PathLike,
+      ...rest: unknown[]
+    ) => {
+      if (path.resolve(String(target)) === path.resolve(file)) {
+        return Promise.reject(
+          Object.assign(new Error("cannot resolve notebook"), { code: "EACCES" })
+        )
+      }
+      return (original as unknown as (...args: unknown[]) => Promise<string>)(
+        target,
+        ...rest
+      )
+    }) as unknown as typeof fsp.realpath)
+    restore.push(() => spy.mockRestore())
+    const sink = makeWarningSink()
+    const svc = makeNotebookFileService({ worktree: dir, warningSink: sink })
+    try {
+      await Effect.runPromise(
+        svc.writeAtomic(file, notebook as unknown as NotebookRaw)
+      )
+      const warnings = sink.drain()
+      expect(warnings.length).toBeGreaterThanOrEqual(1)
+      expect(warnings.every((warning) => warning.source === "path-resolution")).toBe(true)
+      expect(warnings.some((warning) => (warning.detail ?? "").includes("n.ipynb"))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("records a warning when the write-path stat probe fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-write-stat-"))
+    const file = path.join(dir, "n.ipynb")
+    const original = fsp.stat
+    const spy = spyOn(fsp, "stat").mockImplementation(((
+      target: fs.PathLike,
+      ...rest: unknown[]
+    ) => {
+      if (path.resolve(String(target)) === path.resolve(file)) {
+        return Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+      }
+      return (original as unknown as (...args: unknown[]) => Promise<unknown>)(
+        target,
+        ...rest
+      )
+    }) as unknown as typeof fsp.stat)
+    restore.push(() => spy.mockRestore())
+    const sink = makeWarningSink()
+    const svc = makeNotebookFileService({ worktree: dir, warningSink: sink })
+    try {
+      await Effect.runPromise(
+        svc.writeAtomic(file, notebook as unknown as NotebookRaw)
+      )
+      const warnings = sink.drain()
+      expect(warnings.length).toBeGreaterThanOrEqual(1)
+      expect(warnings.every((warning) => warning.source === "path-resolution")).toBe(true)
+      expect(warnings.some((warning) => (warning.detail ?? "").includes("n.ipynb"))).toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

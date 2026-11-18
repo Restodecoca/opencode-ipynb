@@ -1,7 +1,7 @@
 import { Effect, Semaphore } from "effect"
 import { randomUUID } from "node:crypto"
 import * as fsp from "node:fs/promises"
-import { constants as fsConstants } from "node:fs"
+import { constants as fsConstants, type Stats } from "node:fs"
 import * as path from "node:path"
 import {
   NotebookNotFoundError,
@@ -47,6 +47,34 @@ const reportLockFailure = (
   error: unknown
 ): void => {
   if (!isMissingPath(error)) sink?.add(warningFrom("lock", error, context))
+}
+
+const probeRealpath = async (
+  sink: WarningSink | undefined,
+  target: string
+): Promise<string | undefined> => {
+  try {
+    return await fsp.realpath(target)
+  } catch (error) {
+    if (!isMissingPath(error)) {
+      sink?.add(warningFrom("path-resolution", error, `resolving ${target}`))
+    }
+    return undefined
+  }
+}
+
+const probeStat = async (
+  sink: WarningSink | undefined,
+  target: string
+): Promise<Stats | undefined> => {
+  try {
+    return await fsp.stat(target)
+  } catch (error) {
+    if (!isMissingPath(error)) {
+      sink?.add(warningFrom("path-resolution", error, `inspecting ${target}`))
+    }
+    return undefined
+  }
 }
 
 const inside = (root: string, target: string): boolean => {
@@ -332,12 +360,12 @@ const buildFileService = (
           const root =
             worktree === undefined
               ? undefined
-              : await fsp.realpath(worktree).catch(() => worktree)
+              : (await probeRealpath(warningSink, worktree)) ?? worktree
           if (root !== undefined) {
             let probe = dir
             let ancestorReal: string | undefined
             for (let depth = 0; depth < 128; depth += 1) {
-              ancestorReal = await fsp.realpath(probe).catch(() => undefined)
+              ancestorReal = await probeRealpath(warningSink, probe)
               if (ancestorReal !== undefined) break
               const next = path.dirname(probe)
               if (next === probe) break
@@ -354,7 +382,7 @@ const buildFileService = (
           await fsp.mkdir(dir, { recursive: true })
           const dirReal =
             worktree === undefined
-              ? await fsp.realpath(dir).catch(() => dir)
+              ? (await probeRealpath(warningSink, dir)) ?? dir
               : await (async () => {
                   const real = await fsp.realpath(dir)
                   if (!inside(root!, real)) {
@@ -369,7 +397,7 @@ const buildFileService = (
           const fileReal =
             options?.noFollowFinal === true
               ? undefined
-              : await fsp.realpath(filePath).catch(() => undefined)
+              : await probeRealpath(warningSink, filePath)
           if (root !== undefined && fileReal !== undefined && !inside(root, fileReal)) {
             throw new PathOutsideWorktreeError({
               message: "path resolves outside of the worktree (symlink)",
@@ -379,7 +407,7 @@ const buildFileService = (
           }
           const target = fileReal ?? path.join(dirReal, path.basename(filePath))
           const targetDir = path.dirname(target)
-          const targetStat = await fsp.stat(target).catch(() => undefined)
+          const targetStat = await probeStat(warningSink, target)
           if (targetStat?.isDirectory()) {
             throw new NotebookWriteError({
               message: `cannot overwrite a directory: ${target}`,
