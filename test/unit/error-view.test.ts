@@ -59,6 +59,13 @@ describe("stripAnsi", () => {
     expect(hasAnsi("\u001b[31mred\u001b[0m")).toBe(true)
     expect(hasAnsi("plain text")).toBe(false)
   })
+
+  it("hasAnsi is stateless across calls", () => {
+    expect(hasAnsi("\u001b[31m")).toBe(true)
+    expect(hasAnsi("abc\u001b[0mx")).toBe(true)
+    expect(hasAnsi("plain")).toBe(false)
+    expect(hasAnsi("\u001b[1mbold")).toBe(true)
+  })
 })
 
 describe("formatOutputs > error view", () => {
