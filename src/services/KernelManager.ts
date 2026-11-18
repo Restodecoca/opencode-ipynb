@@ -490,6 +490,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         }
         state.pending.clear()
         killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
+        if (states.get(state.filePath) === state) states.delete(state.filePath)
         return
       }
       killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
@@ -498,12 +499,14 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         "kernel subprocess exited",
         `code=${code ?? "?"} signal=${signal ?? "none"}`
       )
+      if (states.get(state.filePath) === state) states.delete(state.filePath)
     })
 
     proc.on("error", (err) => {
       state.alive = false
       killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
       failAllPending(state, "kernel subprocess error", err.message)
+      if (states.get(state.filePath) === state) states.delete(state.filePath)
     })
 
     return state

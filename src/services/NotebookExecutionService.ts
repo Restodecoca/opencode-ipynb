@@ -149,12 +149,12 @@ const runPython = (
             }
           }
         }
+        const notifyKill = (error: unknown): void => {
+          warningSink?.add(
+            warningFrom("cleanup", error, "killing the python runner after a timeout or abort")
+          )
+        }
         const killTree = () => {
-          const notifyKill = (error: unknown): void => {
-            warningSink?.add(
-              warningFrom("cleanup", error, "killing the python runner after a timeout or abort")
-            )
-          }
           signalTree("SIGTERM", notifyKill)
           forceTimer = setTimeout(() => signalTree("SIGKILL", notifyKill), 750)
           forceTimer.unref?.()
@@ -209,6 +209,9 @@ const runPython = (
         })
         child.on("close", (code) => {
           clearTimeout(timer)
+          if (forceTimer !== undefined) {
+            signalTree("SIGKILL", notifyKill)
+          }
           cleanup()
           const stdout = Buffer.concat(stdoutChunks).toString("utf8")
           const stderr = Buffer.concat(stderrChunks).toString("utf8")
