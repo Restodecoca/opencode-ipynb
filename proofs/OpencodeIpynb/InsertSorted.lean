@@ -209,7 +209,8 @@ theorem strLt_conn (a b : String) (h : ¬ strLt a b = true) :
   · exact Or.inl heq
   · exact Or.inr (by simp [strLt, hgt])
 
-def bmpSafe (s : String) : Prop := ∀ c ∈ s.toList, c.toNat < 0xD800
+def bmpSafe (s : String) : Prop :=
+  ∀ c ∈ s.toList, c.toNat < 0xD800 ∨ (0xDFFF < c.toNat ∧ c.toNat ≤ 0xFFFF)
 
 theorem insertSortedBy_string_sorted (keys : List String) (key : String)
     (_hkeys : ∀ k ∈ keys, bmpSafe k) (_hkey : bmpSafe key)
