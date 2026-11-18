@@ -5,7 +5,7 @@ import * as path from "node:path"
 const srcRoot = path.join(import.meta.dir, "..", "..", "src")
 
 const silentCatch =
-  /\.catch\(\(\) => \{\s*\}\)|\.catch\(\(\) => (?:undefined|false|null|\[\]|"")\)|\bcatch\s*(?:\([^)]*\))?\s*\{\s*\}/g
+  /\.catch\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*(?:\{\s*\}|undefined|false|null|\[\]|""|[A-Za-z_$][\w$]*)\s*\)|\bcatch\s*(?:\([^)]*\))?\s*\{\s*\}/g
 
 const allowlist = new Map<string, number>([
   ["services/KernelManager.ts|.catch(() => {})", 1],
@@ -14,7 +14,11 @@ const allowlist = new Map<string, number>([
   ["services/PythonService.ts|catch { }", 3],
   ["notebook-diagnostics.ts|catch { }", 2],
   ["virtual-materialize.ts|catch { }", 1],
-  ["plugin-options.ts|catch { }", 1]
+  ["plugin-options.ts|catch { }", 1],
+  ["services/revision.ts|.catch(() => filePath)", 1],
+  ["services/NotebookFileService.ts|.catch(() => worktree)", 2],
+  ["services/NotebookFileService.ts|.catch(() => resolved)", 1],
+  ["tools/kernel.ts|.catch(() => abs)", 1]
 ])
 
 const listFiles = (dir: string): string[] =>
@@ -37,7 +41,7 @@ describe("silent failure allowlist", () => {
         const key = `${rel}|${normalize(match[0])}`
         const left = remaining.get(key)
         if (left === undefined) {
-          offenders.push(`unlisted silent failure at ${rel} near offset ${match.index ?? 0}`)
+          offenders.push(`unlisted silent failure at ${rel} near offset ${match.index ?? 0}: ${normalize(match[0])}`)
           continue
         }
         if (left === 1) remaining.delete(key)

@@ -108,4 +108,16 @@ theorem truncateMarkdownWith_hint_survives
     omega
   rw [clampChars_within _ maxChars htotal]
 
+/- When the caller's budget cannot hold the hint plus a fence pair, the
+   truncator clamps the whole result, so the hint is cut: that is what the TS
+   does for `maxChars < hint.length + 2 * MAX_FENCE`, and the hypothesis of
+   `truncateMarkdownWith_hint_survives` above is exactly the boundary. -/
+theorem truncateMarkdownWith_clamped
+    (normalize squash stripTrailing : List Char → List Char)
+    (scanFence : List Char → Option (Char × Nat))
+    (text : List Char) (hint : List Char) (maxChars : Nat) :
+    (truncateMarkdownWith normalize squash stripTrailing scanFence text maxChars hint).length ≤
+      maxChars :=
+  truncateMarkdownWith_length_le normalize squash stripTrailing scanFence text maxChars hint
+
 end OpencodeIpynb

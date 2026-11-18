@@ -231,8 +231,11 @@ cannot see — and fails unless each silent site appears with its exact count:
   that is missing or not executable is the normal negative result of a
   probe, not a failure worth reporting.
 - Realpath fallbacks (`diagnosticHash` in `notebook-diagnostics`,
-  `virtual-materialize`) — when realpath fails, the caller falls back to the
-  lexical path, which is its documented behavior.
+  `virtual-materialize`, the revision pin in `revision.ts`, the kernel key in
+  `tools/kernel.ts`, and the worktree/file probes in `NotebookFileService`) —
+  when realpath fails, the caller falls back to the lexical path, which is its
+  documented behavior. The scan matches `.catch(() => <identifier>)` as well as
+  empty bodies, so this form must be listed too.
 
 Also deliberate, though not empty-catch sites the scan can count:
 
