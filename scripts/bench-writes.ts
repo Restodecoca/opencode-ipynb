@@ -239,6 +239,36 @@ const measureLargeOutput = (): { ms: number; rssDeltaMb: number } => {
   }
 }
 
+const measureUnicodeEscape = (): { ms: number; rssDeltaMb: number } => {
+  const { formatJsonValue } = require("../src/utils/json-patch.js") as {
+    formatJsonValue: (
+      value: unknown,
+      style: Record<string, unknown>,
+      multiline?: boolean
+    ) => string
+  }
+  const value = {
+    cells: [],
+    metadata: { note: "é".repeat(4 * 1024 * 1024) },
+    nbformat: 4,
+    nbformat_minor: 5
+  }
+  const style = {
+    unit: " ",
+    newline: "\n",
+    itemSeparator: ", ",
+    keySeparator: ": ",
+    ensureAscii: true
+  }
+  const before = process.memoryUsage().rss
+  const started = Bun.nanoseconds()
+  formatJsonValue(value, style, true)
+  return {
+    ms: (Bun.nanoseconds() - started) / 1e6,
+    rssDeltaMb: (process.memoryUsage().rss - before) / 1e6
+  }
+}
+
 const main = async (): Promise<void> => {
   await measure(SMALL)
   const small = await measure(SMALL)
@@ -281,7 +311,13 @@ const main = async (): Promise<void> => {
   console.log(
     `large per-cell output 40MB with maxOutputChars=6000: ${largeOutput.ms.toFixed(1)}ms, rss +${largeOutput.rssDeltaMb.toFixed(0)}MB`
   )
+  const unicodeEscape = measureUnicodeEscape()
+  console.log(
+    `unicode escape 4MB ensureAscii: ${unicodeEscape.ms.toFixed(1)}ms, rss +${unicodeEscape.rssDeltaMb.toFixed(0)}MB`
+  )
   const failures: string[] = []
+  if (unicodeEscape.ms > 400) failures.push(`unicodeEscapeTime ${unicodeEscape.ms.toFixed(1)}ms`)
+  if (unicodeEscape.rssDeltaMb > 200) failures.push(`unicodeEscapeRss ${unicodeEscape.rssDeltaMb.toFixed(0)}MB`)
   if (largeOutput.ms > 200) failures.push(`largeOutputTime ${largeOutput.ms.toFixed(1)}ms`)
   if (largeOutput.rssDeltaMb > 100) failures.push(`largeOutputRss ${largeOutput.rssDeltaMb.toFixed(0)}MB`)
   if (normalized.clearAll > BUDGET) failures.push(`clearAll ${normalized.clearAll.toFixed(2)}x`)

@@ -194,24 +194,37 @@ const canonicalJson = (value: unknown): string => {
 
 const ESCAPE_WINDOW = 4096
 
+const HEX = Array.from({ length: 0x10000 }, (_, code) =>
+  code < 0x7f ? undefined : `\\u${code.toString(16).padStart(4, "0")}`
+)
+
 const escapeWindow = (chunk: string): string => {
-  let out = ""
+  const parts: string[] = []
   let start = 0
   for (let index = 0; index < chunk.length; index += 1) {
-    const code = chunk.charCodeAt(index)
-    if (code < 0x7f) continue
-    out += chunk.slice(start, index)
-    out += `\\u${code.toString(16).padStart(4, "0")}`
+    const replacement = HEX[chunk.charCodeAt(index)]
+    if (replacement === undefined) continue
+    if (start < index) parts.push(chunk.slice(start, index))
+    parts.push(replacement)
     start = index + 1
   }
-  return out + chunk.slice(start)
+  if (start === 0) return chunk
+  parts.push(chunk.slice(start))
+  return parts.join("")
 }
 
 const NON_ASCII = /[\u007f-\uffff]/
 
+const MAX_ESCAPED_STRING = 64 * 1024 * 1024
+
 const encodeString = (value: string, ensureAscii: boolean): string => {
   const json = JSON.stringify(value)
   if (!ensureAscii || !NON_ASCII.test(json)) return json
+  if (json.length > MAX_ESCAPED_STRING) {
+    throw new RangeError(
+      `string escaping would exceed the supported size of ${MAX_ESCAPED_STRING} characters`
+    )
+  }
   const parts: string[] = []
   for (let offset = 0; offset < json.length; offset += ESCAPE_WINDOW) {
     const chunk = json.slice(offset, offset + ESCAPE_WINDOW)
