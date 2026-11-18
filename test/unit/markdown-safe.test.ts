@@ -87,6 +87,17 @@ describe("truncateMarkdown", () => {
     )
     expect(invalid.endsWith("... (truncated)")).toBe(true)
   })
+
+  it("squashes a pathological fence run and strips the cut's trailing newline exactly", () => {
+    const text = "`".repeat(40) + "\n" + "z".repeat(80)
+    const out = truncateMarkdown(text, 114, "TRUNCATED")
+    expect(out).toBe("```\n```\nTRUNCATED")
+  })
+
+  it("returns the normalized text unchanged when it fits", () => {
+    expect(truncateMarkdown("a\rb", 10, "")).toBe("a\nb")
+    expect(truncateMarkdown("a\r\nb", 10, "")).toBe("a\nb")
+  })
 })
 
 describe("formatOutputs label safety", () => {
