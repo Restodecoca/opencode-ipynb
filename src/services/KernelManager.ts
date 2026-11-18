@@ -690,7 +690,10 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
 
   const killKernelUnlocked = async (filePath: string): Promise<void> => {
     const state = states.get(filePath)
-    if (!state) return
+    if (!state) {
+      forgetState(filePath)
+      return
+    }
     forgetState(filePath)
     if (!state.alive) return
     await sendShutdown(state)
@@ -719,13 +722,13 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       readonly warningSink?: WarningSink
     }
   ) {
-      const kernelPath = yield* Effect.promise(() => canonicalPathForKernel(filePath))
       if (options?.signal?.aborted) {
         return yield* new PythonRunnerError({
           message: "warm kernel request aborted",
-          detail: `filePath=${kernelPath}`
+          detail: `filePath=${filePath}`
         })
       }
+      const kernelPath = yield* Effect.promise(() => canonicalPathForKernel(filePath))
       const state = yield* Effect.tryPromise({
         try: () => getOrStart(kernelPath, request, runtime),
         catch: (err) =>
@@ -938,6 +941,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       const all = Array.from(states.keys())
       await Promise.all(all.map((k) => killKernel(k)))
       states.clear()
+      canonicalAliases.clear()
     })
 
   const stats = (): KernelManagerStats => {
