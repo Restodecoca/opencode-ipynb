@@ -12,6 +12,13 @@ export const replaceFile = async (
     return
   } catch (error) {
     if (process.platform !== "win32") throw error
+    const targetStat = await fsp.lstat(target).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        sink?.add(warningFrom("atomic-replace", error, `inspecting ${target}`))
+      }
+      return undefined
+    })
+    if (targetStat?.isDirectory()) throw error
     const backup = `${target}.${process.pid}.${randomBytes(4).toString("hex")}.bak`
     let backedUp = false
     try {

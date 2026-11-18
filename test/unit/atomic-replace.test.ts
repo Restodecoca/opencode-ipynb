@@ -38,7 +38,6 @@ describe("replaceFile", () => {
   })
 
   it("rejects instead of deleting both copies when the rename fails", async () => {
-    if (process.platform === "win32") return
     await withTempDir(async (dir) => {
       const temp = path.join(dir, "new.tmp")
       const target = path.join(dir, "notebook.ipynb")
