@@ -24,6 +24,15 @@ describe("sanitizeTerminal performance", () => {
     expect(Date.now() - started).toBeLessThan(2_000)
     expect(out).not.toContain("\u001b")
   })
+
+  it("strips a multi-megabyte unterminated OSC run in linear time", () => {
+    const text = ("\u001b]" + "a".repeat(100)).repeat(40_000)
+    const started = Date.now()
+    const out = sanitizeTerminal(text)
+    const elapsed = Date.now() - started
+    expect(out).not.toContain("\u001b")
+    expect(elapsed).toBeLessThan(300)
+  })
 })
 
 describe("sanitizeInline", () => {
