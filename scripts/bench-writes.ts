@@ -347,6 +347,15 @@ const measureLargeNotebookEdit = async (): Promise<{
   }
 }
 
+const measurePatchAllocation = (): { ok: boolean; line: string } => {
+  const result = Bun.spawnSync(
+    [process.execPath, "--expose-gc", path.join(import.meta.dir, "bench-alloc.ts")],
+    { stdout: "pipe", stderr: "pipe" }
+  )
+  const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim()
+  return { ok: (result.exitCode ?? 1) === 0, line: output.split("\n").slice(-2).join(" | ") }
+}
+
 const main = async (): Promise<void> => {
   await measure(SMALL)
   const small = await measure(SMALL)
@@ -393,6 +402,8 @@ const main = async (): Promise<void> => {
   console.log(
     `unicode escape 4MB ensureAscii: ${unicodeEscape.ms.toFixed(1)}ms, rss +${unicodeEscape.rssDeltaMb.toFixed(0)}MB`
   )
+  const patchAllocation = measurePatchAllocation()
+  console.log(`patch allocation guard: ${patchAllocation.line}`)
   const objectHeavy = measureObjectHeavyPatch()
   console.log(
     `one-key edit in 64k-key metadata: ${objectHeavy.ms.toFixed(0)}ms, rss +${objectHeavy.rssDeltaMb.toFixed(0)}MB`

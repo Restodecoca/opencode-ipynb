@@ -268,9 +268,12 @@ themselves explicitly rather than staying silent:
   Array nodes store item spans and only materialize the child nodes for the
   span that actually differs, which halved the patch allocation from ~240 MB
   to ~120 MB; the pre-span implementation measured 213-288 MB and 464-663 ms.
-  Those ranges overlap, so `scripts/bench-writes.ts` enforces absolute budgets
-  (400 MB, 900 ms) that catch a gross regression but do not separate the two
-  implementations; only a fixed-workload allocation profile could. An
-  object-heavy notebook (one key changed in 64k-key metadata) costs ~2-9 MB
-  and is guarded on time only. Retained memory after a forced GC is ~25 MB,
-  so the remainder is transient garbage.
+  Those end-to-end ranges overlap, so the write bench enforces only absolute
+  budgets (400 MB, 900 ms) there. The implementation difference is pinned
+  separately by `scripts/bench-alloc.ts`, which spawns a fresh process, patches
+  a fixed 64k-cell notebook, and measures `heapUsed` immediately around
+  `patchJsonTextDetailed`: the span implementation allocates ~43-51 MB per
+  patch while the eager node tree allocated ~132-171 MB, and the guard fails
+  above 60 MB. An object-heavy notebook (one key changed in 64k-key metadata)
+  costs ~2-9 MB and is guarded on time only. Retained memory after a forced GC
+  is ~25 MB, so the remainder is transient garbage.
