@@ -257,6 +257,14 @@ themselves explicitly rather than staying silent:
 
 ### Known limitations
 
+- **Kernel caches are per scope, not LRU-bounded.** One kernel manager (and one
+  live kernel) exists per session directory and notebook path, and both are
+  released when the plugin's dispose runs (`disposeSharedKernelManager`,
+  `disposeAll`). A long-lived host that creates many sessions without ever
+  unloading the plugin accumulates them; a measured 200-notebook probe showed
+  no fd, child-process or listener growth, so this is a policy gap rather than
+  a leak. Bounding it would need an idle-kernel reaper, which changes when a
+  warm kernel disappears and is deliberately not done here.
 - **Unreproduced suite failure.** One full-suite run on this branch reported a
   single failure that was never named. Fifteen further runs (six inside a 2 GB
   cgroup, nine as three concurrent instances, plus ten earlier ones) were

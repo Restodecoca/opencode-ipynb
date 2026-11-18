@@ -250,14 +250,18 @@ const buildPathService = (options: PathServiceOptions): PathServiceShape => {
                 reportWalk(`inspecting ${target}`, error)
                 return undefined
               })
-              await fsp.writeFile(temp, content, {
-                encoding: "utf8",
-                flag: "wx",
-                mode:
-                  existing !== undefined && !existing.isSymbolicLink()
-                    ? existing.mode & 0o777
-                    : 0o600
-              })
+              // Write through a handle so the content is fsynced before the
+              // rename: without it a crash loses an export that the tool
+              // already reported as written.
+              const handle = await fsp.open(temp, "wx", existing !== undefined && !existing.isSymbolicLink()
+                ? existing.mode & 0o777
+                : 0o600)
+              try {
+                await handle.writeFile(content, "utf8")
+                await handle.sync()
+              } finally {
+                await handle.close()
+              }
               if (existing !== undefined && !existing.isSymbolicLink()) {
                 await fsp.chmod(temp, existing.mode & 0o777).catch((error: unknown) => {
                   sink?.add(
@@ -272,6 +276,17 @@ const buildPathService = (options: PathServiceOptions): PathServiceShape => {
                 })
               }
               await replaceFile(temp, target, sink)
+              await fsp.open(path.dirname(target), "r").then(async (dirHandle) => {
+                try {
+                  await dirHandle.sync()
+                } finally {
+                  await dirHandle.close()
+                }
+              }).catch((error: unknown) => {
+                sink?.add(
+                  warningFrom("atomic-replace", error, `syncing the directory of ${target}`)
+                )
+              })
             } catch (error) {
               await fsp.rm(temp, { force: true }).catch((cleanupError: unknown) => {
                 sink?.add(warningFrom("temp-unlink", cleanupError, `left ${temp}`))

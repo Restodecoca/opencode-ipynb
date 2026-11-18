@@ -684,6 +684,25 @@ const buildFileService = (
               await replaceFile(tmp, target, warningSink)
             }
             await afterRenameHook(freshTarget)
+            // The content is fsynced before the rename; without syncing the
+            // directory too, a crash can lose the rename itself on ext4 with
+            // data=writeback, leaving the old content visible even though the
+            // call returned success.
+            await fsp.open(path.dirname(freshTarget), "r").then(async (dirHandle) => {
+              try {
+                await dirHandle.sync()
+              } finally {
+                await dirHandle.close()
+              }
+            }).catch((error: unknown) => {
+              warningSink?.add(
+                warningFrom(
+                  "revision-check",
+                  error,
+                  `could not sync the directory of ${freshTarget} after the rename`
+                )
+              )
+            })
             const finalStat = await fsp.stat(freshTarget).catch((error: unknown) => {
               if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
                 warningSink?.add(
