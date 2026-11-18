@@ -316,6 +316,25 @@ const makeExportImpl = (
             issues: ["refusing to write an export over a .ipynb file"]
           })
         }
+        const extensionOf = (value: string): string => {
+          let base = path.basename(value).toLowerCase()
+          if (process.platform === "win32") base = base.replace(/[ .]+$/, "")
+          const dot = base.lastIndexOf(".")
+          return dot <= 0 ? "" : base.slice(dot)
+        }
+        const exportExtensions = new Set([".md", ".markdown", ".py", ".txt", ".rst"])
+        const outputExtension = extensionOf(outputReal)
+        if (!exportExtensions.has(outputExtension)) {
+          return yield* new NotebookValidationError({
+            message:
+              "outputPath must use an export extension (.md, .markdown, .py, .txt, .rst)",
+            filePath: abs,
+            issues: [
+              `refusing to write an export to "${path.basename(outputReal)}"`,
+              "pass  --outputPath with a markdown, python, or text extension"
+            ]
+          })
+        }
         const writeTarget = outputReal
         const lexicalPaths = yield* permSvc.aliases(outAbs)
         const pinnedPaths = yield* permSvc.aliases(writeTarget)

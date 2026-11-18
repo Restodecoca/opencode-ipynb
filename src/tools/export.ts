@@ -21,7 +21,9 @@ const args = {
   outputPath: z
     .string()
     .optional()
-    .describe("Optional path to write the export to. If omitted, returns content in the tool output."),
+    .describe(
+      "Optional path to write the export to (.md, .markdown, .py, .txt or .rst); any other extension is refused so an export cannot overwrite configuration or key material. If omitted, returns content in the tool output."
+    ),
   maxExportChars: z
     .number()
     .int()

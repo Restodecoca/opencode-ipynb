@@ -727,3 +727,69 @@ describe("NotebookExportService > write safety", () => {
   })
 
 })
+
+describe("export output must use an export extension", () => {
+  const notebook = {
+    nbformat: 4,
+    nbformat_minor: 5,
+    metadata: {
+      kernelspec: { display_name: "Python 3", language: "python", name: "python3" },
+      language_info: { name: "python", file_extension: ".py" }
+    },
+    cells: [
+      { cell_type: "markdown", metadata: {}, source: "# Title" },
+      {
+        cell_type: "code",
+        execution_count: null,
+        metadata: {},
+        outputs: [],
+        source: "print(1)"
+      }
+    ]
+  }
+
+  it("refuses to overwrite .env, package.json and id_rsa", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-ext-"))
+    try {
+      const file = writeNotebook(dir, "n.ipynb", notebook)
+      const { exportSvc } = buildExport(dir, dir)
+      for (const name of [".env", "package.json", "id_rsa"]) {
+        const target = path.join(dir, name)
+        fs.writeFileSync(target, "SENSITIVE")
+        const before = fs.readFileSync(target, "utf8")
+        const exit = await Effect.runPromiseExit(
+          exportSvc.export(file, {
+            format: "markdown",
+            outputPath: target,
+            includeOutputs: false,
+            maxOutputChars: 10_000
+          } as never)
+        )
+        expect(exit._tag).toBe("Failure")
+        expect(fs.readFileSync(target, "utf8")).toBe(before)
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("still writes a normal markdown export", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-export-ok-"))
+    try {
+      const file = writeNotebook(dir, "n.ipynb", notebook)
+      const { exportSvc } = buildExport(dir, dir)
+      const target = path.join(dir, "out.md")
+      await runOrThrow(
+        exportSvc.export(file, {
+          format: "markdown",
+          outputPath: target,
+          includeOutputs: false,
+          maxOutputChars: 10_000
+        } as never)
+      )
+      expect(fs.readFileSync(target, "utf8")).toContain("# Title")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
