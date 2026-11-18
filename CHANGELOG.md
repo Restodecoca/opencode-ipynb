@@ -19,6 +19,31 @@
 - README: documented the byte-stability guarantee, the `ipynb_clean`
   `normalizeSource` exception, and the `clearOutputs: "auto"` execution-count
   behavior.
+- Every writing tool (`ipynb_edit`, `ipynb_cell_insert`, `ipynb_cell_delete`,
+  `ipynb_cell_move`, `ipynb_clean`, `ipynb_outputs` clear, `ipynb_run`
+  `save=true`) now reports `writeMode` and `writeModeReason` in its result
+  metadata, and a fallback to a full-file rewrite also records a `json-patch`
+  warning, so the degradation that issue #2 is about can never happen silently.
+  Paths that write nothing report an undefined mode instead of claiming a
+  patched write.
+- An invalid `OPENCODE_IPYNB_OPTIONS` value is no longer silently ignored:
+  `ipynb_doctor` reports the offending option and states that instance or
+  default options are in effect.
+- On Windows, a pyright `.cmd`/`.bat` shim whose command line contains shell
+  metacharacters (`%`, `&`, `|`, `<`, `>`, `^`, quotes, CR/LF) is refused with
+  an `unsafe-shell-command` diagnostics skip; the command is never handed to
+  `cmd.exe`, where the quoting could not stop variable expansion or command
+  splitting.
+- Kernel and Python-runner kill failures are recorded as `cleanup` warnings
+  instead of disappearing; a process that is already gone counts as success
+  rather than as a warning. The kill helpers also refuse a reported pid of 1 so
+  a lying helper can never broadcast a signal.
+- Diagnostics sidecars are no longer rewritten when their content is unchanged,
+  preserving their mtime and skipping the temp-file plus rename on repeated
+  diagnostics of the same notebook.
+- The silence guard, Lean proofs, and TLA+ models were hardened alongside: every
+  deliberately silent site is inventoried in `docs/contributing.md`, and each
+  spec ships with a dishonest twin plus vacuity probes (see that guide).
 
 ## 2.0.0
 
