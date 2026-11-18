@@ -5,9 +5,11 @@ CONSTANTS Writers, None
 
 \* ExternalWrite stays enabled even while a writer holds the lock: the
 \* file lock is an in-process semaphore and an external writer such as
-\* Jupyter never takes it. The recheck inside WriteChecked is the only
-\* defense against an update that lands mid-window, and AbortChecked is
-\* the honest exit when that defense fires.
+\* Jupyter never takes it. WriteChecked collapses the recheck, the
+\* write, and the rename into one step, so the check-to-rename window
+\* against a non-cooperating external writer is the same stated
+\* assumption as in NotebookExecutionSave. AbortChecked is the honest
+\* exit when the recheck sees an update that landed mid-window.
 
 VARIABLES holder, disk, revision, running, finished, wrote, stale
 
