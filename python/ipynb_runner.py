@@ -751,9 +751,11 @@ def _run_serve_request(
             response["id"] = req_id
         return response
 
+    # nbclient's timeout is per cell; the caller's budget covers the whole
+    # request, so the request-level wall clock lives in the TypeScript layer
+    # (KernelManager arms it when the payload is written). Giving each cell the
+    # full budget here only bounds a runaway single cell.
     timeout_s = max(1, int(req.get("timeoutMs", 120_000) / 1000))
-    # The initial client timeout belongs to the first serve request. Update it
-    # per request so a short first call does not freeze every later timeout.
     try:
         client.timeout = timeout_s
     except Exception:

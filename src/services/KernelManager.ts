@@ -49,7 +49,7 @@ export interface KernelManagerStats {
 interface PendingRequest {
   resolve: (response: RunResponse) => void
   reject: (err: PythonRunnerError) => void
-  timer: NodeJS.Timeout
+  timer: NodeJS.Timeout | undefined
   cleanup?: () => void
   sink?: WarningSink | undefined
 }
@@ -791,18 +791,23 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       const raw = yield* Effect.tryPromise<RunResponse, PythonRunnerError>({
         try: () =>
           new Promise<RunResponse>((resolve, reject) => {
-            const timer = setTimeout(() => {
-              const handler = state.pending.get(id)
-              handler?.cleanup?.()
-              state.pending.delete(id)
-              stopKernelIfIdle(kernelPath, state)
-              reject(
-                new PythonRunnerError({
-                  message: `warm kernel request timed out after ${timeoutMs}ms`,
-                  detail: `filePath=${kernelPath} id=${id}`
-                })
-              )
-            }, timeoutMs + 5_000)
+            let timer: NodeJS.Timeout | undefined
+            const armTimer = (): void => {
+              if (timer !== undefined) return
+              timer = setTimeout(() => {
+                const handler = state.pending.get(id)
+                handler?.cleanup?.()
+                state.pending.delete(id)
+                stopKernelIfIdle(kernelPath, state)
+                reject(
+                  new PythonRunnerError({
+                    message: `warm kernel request timed out after ${timeoutMs}ms`,
+                    detail: `filePath=${kernelPath} id=${id}`
+                  })
+                )
+              }, 2 * timeoutMs + 5_000)
+              timer.unref?.()
+            }
             let cleanupStdinError: (() => void) | undefined
             let cleanupAbort: (() => void) | undefined
             state.pending.set(id, {
@@ -827,7 +832,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               ...(requestSink === undefined ? {} : { sink: requestSink })
             })
             const onAbort = () => {
-              clearTimeout(timer)
+              if (timer !== undefined) clearTimeout(timer)
               state.pending.delete(id)
               cleanupAbort?.()
               cleanupStdinError?.()
@@ -875,6 +880,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               }
               stdin.once("error", onStdinError)
               cleanupStdinError = () => stdin.off("error", onStdinError)
+              armTimer()
               stdin.write(payload)
             } catch (err) {
               cleanupStdinError?.()
