@@ -202,7 +202,7 @@ def _build_env_report(
     """
     try:
         nb = _read_notebook_raw(file_path)
-    except FileNotFoundError as exc:
+    except FileNotFoundError:
         return _error_response(
             None,
             started,
@@ -431,7 +431,7 @@ def _build_cell_summary(
     for key in ("stdout", "stderr", "resultPreview"):
         if key in summary and len(summary[key]) > max_output_chars:
             summary[key] = summary[key][:max_output_chars] + (
-                f"\n... (truncated, use maxOutputChars to increase)"
+                "\n... (truncated, use maxOutputChars to increase)"
             )
     for err in summary.get("errors") or []:
         for key in ("ename", "evalue"):
@@ -471,8 +471,7 @@ def _error_response(
             "ename": str(ename)[:MAX_ERROR_TEXT],
             "evalue": str(evalue)[:MAX_ERROR_TEXT],
             "traceback": [
-                line[:MAX_ERROR_TEXT]
-                for line in list(traceback_lines or [])[:200]
+                line[:MAX_ERROR_TEXT] for line in list(traceback_lines or [])[:200]
             ],
         },
     }
@@ -611,7 +610,9 @@ def _run_nbclient(
                 status="ok",
                 max_output_chars=int(req.get("maxOutputChars", 12_000)),
                 duration_ms=0,
-                include_raw=bool(req.get("save", False) or req.get("includeRawOutputs", False)),
+                include_raw=bool(
+                    req.get("save", False) or req.get("includeRawOutputs", False)
+                ),
             )
         )
 
@@ -810,7 +811,9 @@ def _run_serve_request(
                 status="ok",
                 max_output_chars=int(req.get("maxOutputChars", 12_000)),
                 duration_ms=cell_durations_ms.get(i, 0),
-                include_raw=bool(req.get("save", False) or req.get("includeRawOutputs", False)),
+                include_raw=bool(
+                    req.get("save", False) or req.get("includeRawOutputs", False)
+                ),
             )
         )
 
@@ -1105,7 +1108,7 @@ def _run() -> int:
 
     try:
         import nbformat  # type: ignore
-        from nbclient import NotebookClient  # type: ignore
+        from nbclient import NotebookClient  # type: ignore  # noqa: F401
     except ImportError as exc:
         sys.stdout.write(
             json.dumps(
