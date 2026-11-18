@@ -66,12 +66,12 @@ export const MAX_JSON_DEPTH = 512
 
 class DepthExceededError extends RangeError {}
 
-const decodeString = (text: string, start: number, end: number): string => {
-  const raw = text.slice(start, end)
-  return raw.indexOf("\\") === -1 ? raw.slice(1, -1) : (JSON.parse(raw) as string)
-}
-
-const parseNode = (text: string, from: number, depth = 0): JsonNode => {
+const parseNode = (
+  text: string,
+  from: number,
+  depth = 0,
+  known?: unknown
+): JsonNode => {
   if (depth > MAX_JSON_DEPTH) {
     throw new DepthExceededError(
       `notebook nesting exceeds the supported depth of ${MAX_JSON_DEPTH}`
@@ -81,21 +81,32 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
   const char = text[start]
   if (char === '"') {
     const end = parseStringSpan(text, start)
-    return { kind: "literal", start, end, value: decodeString(text, start, end) }
+    return { kind: "literal", start, end, value: known }
   }
   if (char === "{") {
     const entries: ObjectEntry[] = []
     let pos = skipWhitespace(text, start + 1)
     if (text[pos] === "}") {
-      return { kind: "object", start, end: pos + 1, entries, value: {} }
+      return {
+        kind: "object",
+        start,
+        end: pos + 1,
+        entries,
+        value: (known ?? {}) as Record<string, unknown>
+      }
     }
     for (;;) {
       const keyStart = skipWhitespace(text, pos)
       const keyEnd = parseStringSpan(text, keyStart)
-      const key = decodeString(text, keyStart, keyEnd)
+      const rawKey = text.slice(keyStart + 1, keyEnd - 1)
+      const key = rawKey.indexOf("\\") === -1 ? rawKey : (JSON.parse(text.slice(keyStart, keyEnd)) as string)
       pos = skipWhitespace(text, keyEnd)
       pos = skipWhitespace(text, pos + 1)
-      const value = parseNode(text, pos, depth + 1)
+      const childKnown =
+        typeof known === "object" && known !== null && !Array.isArray(known)
+          ? (known as Record<string, unknown>)[key]
+          : undefined
+      const value = parseNode(text, pos, depth + 1, childKnown)
       entries.push({ key, keyStart, value })
       pos = skipWhitespace(text, value.end)
       if (text[pos] === ",") {
@@ -103,9 +114,13 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
         continue
       }
       if (text[pos] === "}") {
-        const value: Record<string, unknown> = {}
-        for (const entry of entries) value[entry.key] = entry.value.value
-        return { kind: "object", start, end: pos + 1, entries, value }
+        return {
+          kind: "object",
+          start,
+          end: pos + 1,
+          entries,
+          value: (known ?? {}) as Record<string, unknown>
+        }
       }
       throw new SyntaxError("expected , or } in object")
     }
@@ -114,10 +129,17 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
     const items: JsonNode[] = []
     let pos = skipWhitespace(text, start + 1)
     if (text[pos] === "]") {
-      return { kind: "array", start, end: pos + 1, items, value: [] }
+      return {
+        kind: "array",
+        start,
+        end: pos + 1,
+        items,
+        value: (known ?? []) as ReadonlyArray<unknown>
+      }
     }
     for (;;) {
-      const value = parseNode(text, pos, depth + 1)
+      const childKnown = Array.isArray(known) ? known[items.length] : undefined
+      const value = parseNode(text, pos, depth + 1, childKnown)
       items.push(value)
       pos = skipWhitespace(text, value.end)
       if (text[pos] === ",") {
@@ -130,7 +152,7 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
           start,
           end: pos + 1,
           items,
-          value: items.map((item) => item.value)
+          value: (known ?? []) as ReadonlyArray<unknown>
         }
       }
       throw new SyntaxError("expected , or ] in array")
@@ -138,23 +160,13 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
   }
   for (const literal of ["true", "false", "null"] as const) {
     if (text.startsWith(literal, start)) {
-      return {
-        kind: "literal",
-        start,
-        end: start + literal.length,
-        value: literal === "true" ? true : literal === "false" ? false : null
-      }
+      return { kind: "literal", start, end: start + literal.length, value: known }
     }
   }
   NUMBER.lastIndex = start
   const match = NUMBER.exec(text)
   if (match !== null) {
-    return {
-      kind: "literal",
-      start,
-      end: start + match[0].length,
-      value: Number(match[0])
-    }
+    return { kind: "literal", start, end: start + match[0].length, value: known }
   }
   throw new SyntaxError(`unexpected token at ${start}`)
 }
@@ -683,8 +695,8 @@ export const patchJsonTextDetailed = (
   let root: JsonNode
   let previous: unknown
   try {
-    root = parseNode(text, 0)
-    previous = root.value
+    previous = JSON.parse(text)
+    root = parseNode(text, 0, 0, previous)
   } catch (error) {
     if (error instanceof DepthExceededError) return { reason: "too-deep" }
     return { reason: "parse-failed" }

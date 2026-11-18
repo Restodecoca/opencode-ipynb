@@ -266,3 +266,19 @@ describe("patchJsonTextDetailed property fuzz", () => {
     expect(identity.text).toBe(text)
   })
 })
+
+describe("object keys that use escape sequences", () => {
+  it("keeps the stored escape when another key changes", () => {
+    const style: JsonTextStyle = {
+      unit: " ",
+      newline: "\n",
+      itemSeparator: ", ",
+      keySeparator: ": ",
+      ensureAscii: false
+    }
+    const text = `{"a\\u0041b": 1, "z": 2}`
+    const result = patchJsonTextDetailed(text, { aAb: 1, z: 3 }, { style })
+    expect(result.reason).toBeUndefined()
+    expect(result.text).toBe(`{"a\\u0041b": 1, "z": 3}`)
+  })
+})
