@@ -402,11 +402,12 @@ const main = async (): Promise<void> => {
     `one-cell edit in a ${largeEdit.mb.toFixed(1)}MB / 64k-cell notebook: ${largeEdit.ms.toFixed(0)}ms, rss +${largeEdit.rssDeltaMb.toFixed(0)}MB`
   )
   const failures: string[] = []
-  // Eight consecutive runs measured 369-457 ms and 71-172 MB, so the ceilings
-  // leave headroom for CI variance while still failing the eager tree, which
-  // measured 513-531 ms and 251-267 MB.
-  if (largeEdit.ms > 650) failures.push(`largeEditTime ${largeEdit.ms.toFixed(0)}ms`)
-  if (largeEdit.rssDeltaMb > 350) failures.push(`largeEditRss ${largeEdit.rssDeltaMb.toFixed(0)}MB`)
+  // These are absolute budgets, not a discriminator between implementations:
+  // 18 lazy runs measured 421-585 ms / 91-231 MB and 5 eager runs 464-663 ms /
+  // 213-288 MB, so this machine's variance overlaps the two. The ceilings only
+  // catch a gross regression (a runaway allocation or a quadratic patch).
+  if (largeEdit.ms > 900) failures.push(`largeEditTime ${largeEdit.ms.toFixed(0)}ms`)
+  if (largeEdit.rssDeltaMb > 400) failures.push(`largeEditRss ${largeEdit.rssDeltaMb.toFixed(0)}MB`)
   // The object-heavy delta is often negative (the GC frees more than the patch
   // allocates), so only the time budget is meaningful here.
   if (objectHeavy.ms > 400) failures.push(`objectHeavyTime ${objectHeavy.ms.toFixed(0)}ms`)
