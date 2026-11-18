@@ -21,7 +21,12 @@ import {
   refreshMaterializedDocument
 } from "./virtual-materialize.js"
 import { NotebookRpc } from "./rpc.js"
-import { bestEffort, makeWarningSink } from "./utils/warnings.js"
+import {
+  bestEffort,
+  makeWarningSink,
+  warningFrom,
+  type Warning
+} from "./utils/warnings.js"
 import { v2ToolRegistrations } from "./registrations.js"
 import {
   appendResultText,
@@ -31,6 +36,21 @@ import {
   toolName,
   type MutableResult
 } from "./notebook-hooks.js"
+
+const MAX_NOTEBOOK_WARNINGS = 50
+
+const attachNotebookWarnings = (
+  result: MutableResult | undefined,
+  warnings: ReadonlyArray<Warning>
+): void => {
+  if (result === undefined || warnings.length === 0) return
+  const current = result.metadata?.notebookWarnings
+  const existing = Array.isArray(current) ? (current as ReadonlyArray<Warning>) : []
+  result.metadata = {
+    ...(result.metadata ?? {}),
+    notebookWarnings: [...existing, ...warnings].slice(-MAX_NOTEBOOK_WARNINGS)
+  }
+}
 
 const plugin: Plugin.Plugin = {
   id: "opencode-ipynb",
@@ -84,7 +104,11 @@ const plugin: Plugin.Plugin = {
       if (!changedNotebook(event.tool, event.input, event.result?.metadata)) return
       const filePath = (event.input as { filePath?: unknown } | undefined)?.filePath
       if (typeof filePath !== "string") return
-      void rpcRegistration.events.emit("changed", { filePath }).catch(() => {})
+      const sink = makeWarningSink()
+      const result = event.result as MutableResult | undefined
+      void rpcRegistration.events.emit("changed", { filePath }).catch((error) => {
+        sink.add(warningFrom("cleanup", error, "emitting the changed event"))
+      })
 
       const name = toolName(event.tool)
       const absoluteForMaterialized = path.isAbsolute(filePath)
@@ -97,7 +121,8 @@ const plugin: Plugin.Plugin = {
           codeChange &&
           (await hasMaterializedDocument(
             context.location.directory,
-            absoluteForMaterialized
+            absoluteForMaterialized,
+            { warningSink: sink }
           ))
         ) {
           document = await loadDocument(filePath)
@@ -125,10 +150,12 @@ const plugin: Plugin.Plugin = {
               operation: "materialize-refresh"
             }
           })
-          await refreshMaterializedDocument(document, context.location.directory)
+          await refreshMaterializedDocument(document, context.location.directory, {
+            warningSink: sink
+          })
         }
       } catch (error) {
-        const result = event.result as MutableResult | undefined
+        sink.add(warningFrom("sidecar-cleanup", error, "refreshing the notebook sidecar"))
         if (result) {
           const message =
             error instanceof Error ? error.message : String(error)
@@ -140,9 +167,13 @@ const plugin: Plugin.Plugin = {
       }
 
       if (effectiveOptions.lspDiagnostics === false || !diagnosableTools.has(name)) {
+        attachNotebookWarnings(result, sink.drain())
         return
       }
-      if (!codeChange) return
+      if (!codeChange) {
+        attachNotebookWarnings(result, sink.drain())
+        return
+      }
       let permissionDenied = false
       try {
         document ??= await loadDocument(filePath)
@@ -188,6 +219,7 @@ const plugin: Plugin.Plugin = {
             effectiveOptions.diagnosticsTimeoutMs
           ))
         ) {
+          attachNotebookWarnings(result, sink.drain())
           return
         }
         try {
@@ -247,9 +279,9 @@ const plugin: Plugin.Plugin = {
             ? {}
             : { pythonPath: document.pythonPath }),
           pyrightPath: effectiveOptions.pyrightPath,
-          timeoutMs: effectiveOptions.diagnosticsTimeoutMs
+          timeoutMs: effectiveOptions.diagnosticsTimeoutMs,
+          warningSink: sink
         })
-        const result = event.result as MutableResult | undefined
         if (!result) return
         if (diagnostics.text.length > 0) appendResultText(result, diagnostics.text)
         else if (
@@ -269,16 +301,27 @@ const plugin: Plugin.Plugin = {
             )
           }
         }
-      } catch {
+      } catch (error) {
         if (permissionDenied) {
-          const result = event.result as MutableResult | undefined
           if (result) {
             appendResultText(
               result,
               "Notebook diagnostics skipped: permission denied."
             )
           }
+        } else {
+          sink.add(warningFrom("python-probe", error, "running notebook diagnostics"))
+          if (result) {
+            appendResultText(
+              result,
+              `Notebook diagnostics failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          }
         }
+      } finally {
+        attachNotebookWarnings(result, sink.drain())
       }
     })
 
@@ -289,7 +332,7 @@ const plugin: Plugin.Plugin = {
         await bestEffort(sink, "cleanup", "rpc dispose", () => rpcRegistration.dispose())
         await bestEffort(sink, "cleanup", "tool dispose", () => registration.dispose())
         await bestEffort(sink, "sidecar-cleanup", "virtual documents", () =>
-          cleanupVirtualDocuments(context.location.directory)
+          cleanupVirtualDocuments(context.location.directory, { warningSink: sink })
         )
       } finally {
         for (const warning of sink.drain()) {

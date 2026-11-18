@@ -33,7 +33,20 @@ import { replaceFile } from "../utils/atomic-replace.js"
 
 interface NotebookFileServiceOptions {
   readonly worktree?: string
-  readonly warningSink?: WarningSink
+  readonly warningSink?: WarningSink | undefined
+}
+
+const isMissingPath = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === "ENOENT" || code === "ENOTDIR"
+}
+
+const reportLockFailure = (
+  sink: WarningSink | undefined,
+  context: string,
+  error: unknown
+): void => {
+  if (!isMissingPath(error)) sink?.add(warningFrom("lock", error, context))
 }
 
 const inside = (root: string, target: string): boolean => {
@@ -382,9 +395,18 @@ const buildFileService = (
           )
           try {
             if (options?.previousText !== undefined) {
-              const current = await fsp
-                .readFile(target, { encoding: "utf8" })
-                .catch(() => undefined)
+              let current: string | undefined
+              try {
+                current = await fsp.readFile(target, { encoding: "utf8" })
+              } catch (revisionError) {
+                warningSink?.add(
+                  warningFrom(
+                    "revision-check",
+                    revisionError,
+                    "could not verify the notebook revision before writing"
+                  )
+                )
+              }
               if (current !== undefined && current !== options.previousText) {
                 throw new NotebookValidationError({
                   message: "notebook changed while the tool was editing it",
@@ -444,17 +466,37 @@ const buildFileService = (
     writeAtomic,
     withFileLock: (filePath, program) =>
       Effect.gen(function* () {
+        let lockFailureReported = false
+        const reportLock = (context: string, error: unknown): void => {
+          if (lockFailureReported) return
+          lockFailureReported = true
+          reportLockFailure(warningSink, context, error)
+        }
         const key = yield* Effect.tryPromise({
           try: async () => {
-            const real = await fsp.realpath(filePath).catch(() => undefined)
+            const real = await fsp.realpath(filePath).catch((error: unknown) => {
+              reportLock("resolving the lock key", error)
+              return undefined
+            })
             if (real !== undefined) return real
             const parent = await fsp
               .realpath(path.dirname(filePath))
-              .catch(() => path.dirname(filePath))
+              .catch((error: unknown) => {
+                reportLock("resolving the lock key parent", error)
+                return path.dirname(filePath)
+              })
             return path.join(parent, path.basename(filePath))
           },
-          catch: () => path.resolve(filePath)
-        }).pipe(Effect.orElseSucceed(() => path.resolve(filePath)))
+          catch: (error) => {
+            reportLock("resolving the lock key", error)
+            return path.resolve(filePath)
+          }
+        }).pipe(
+          Effect.orElseSucceed((error) => {
+            reportLock("resolving the lock key", error)
+            return path.resolve(filePath)
+          })
+        )
         const lock = getOrCreateLock(key)
         lock.active += 1
         return yield* lock.sem.withPermit(program).pipe(

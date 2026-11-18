@@ -37,6 +37,12 @@ import {
 } from "../utils/limits.js"
 import { formatHint, type TruncationHintKey } from "../utils/i18n.js"
 import { splitSourceLines, type NotebookRaw } from "../domain/notebook.js"
+import {
+  type Warning,
+  type WarningSink,
+  makeWarningSink,
+  warningFrom
+} from "../utils/warnings.js"
 
 export type ExecutionMode = "cell" | "range" | "all" | "from"
 
@@ -60,13 +66,17 @@ export interface ExecutionResult {
   readonly durationMs: number
   readonly saved: boolean
   readonly response: RunResponse
+  readonly warnings?: ReadonlyArray<Warning>
 }
 
 export interface NotebookExecutionServiceShape {
   readonly execute: (
     filePath: string,
     request: ExecutionRequest,
-    options?: { readonly signal?: AbortSignal }
+    options?: {
+      readonly signal?: AbortSignal
+      readonly warningSink?: WarningSink
+    }
   ) => Effect.Effect<ExecutionResult, NotebookError>
   readonly reportEnv: (
     filePath: string,
@@ -78,6 +88,7 @@ export interface ReportEnvOptions {
   readonly timeoutMs?: number | undefined
   readonly signal?: AbortSignal | undefined
   readonly skipShellPermission?: boolean | undefined
+  readonly warningSink?: WarningSink | undefined
 }
 
 export interface ExecutionOptions {
@@ -85,6 +96,7 @@ export interface ExecutionOptions {
   readonly warmKernel: boolean
   readonly defaultTimeoutMs: number
   readonly pythonPath?: string | undefined
+  readonly warningSink?: WarningSink | undefined
 }
 
 const runPython = (
@@ -529,6 +541,7 @@ const makeExecutionImpl = (
   const kernelManager = execOpts?.kernelManager
   const warmKernel = execOpts?.warmKernel ?? false
   const defaultTimeoutMs = execOpts?.defaultTimeoutMs ?? 120_000
+  const defaultSink = execOpts?.warningSink
 
   const useWarmKernel = (mode: ExecutionMode): boolean =>
     warmKernel && kernelManager !== undefined && (mode === "all" || mode === "cell")
@@ -536,6 +549,16 @@ const makeExecutionImpl = (
   return {
     execute: (filePath, request, options) =>
       Effect.gen(function* () {
+        const sink = makeWarningSink()
+        const requestedSink = options?.warningSink ?? defaultSink
+        const record = (warning: Warning): void => {
+          sink.add(warning)
+          requestedSink?.add(warning)
+        }
+        const finish = (result: ExecutionResult): ExecutionResult => {
+          const warnings = sink.drain()
+          return warnings.length === 0 ? result : { ...result, warnings }
+        }
         const abs = yield* pathSvc.resolve(filePath)
         yield* pathSvc.ensureInsideWorktree(abs)
         yield* pathSvc.ensureExists(abs)
@@ -557,9 +580,14 @@ const makeExecutionImpl = (
         }
         yield* fileSvc.read(abs)
         const displayPath = pathSvc.toDisplay(abs)
-        const kernelPath = yield* Effect.promise(() =>
-          fsp.realpath(abs).catch(() => abs)
-        )
+        const kernelPath = yield* Effect.promise(async () => {
+          try {
+            return await fsp.realpath(abs)
+          } catch (error) {
+            record(warningFrom("path-resolution", error, `kernel path for ${abs}`))
+            return abs
+          }
+        })
         yield* pathSvc.ensureInsideWorktree(kernelPath)
 
         const parsed = RunRequestSchema.safeParse({
@@ -664,7 +692,9 @@ const makeExecutionImpl = (
           }
         })
 
-        const probe = yield* pythonSvc.probe()
+        const probe = yield* pythonSvc.probe({
+          warningSink: requestedSink
+        })
         if (probe.from === "none") {
           return yield* new NotebookNotImplementedError({
             message:
@@ -718,7 +748,13 @@ const makeExecutionImpl = (
               kernelPath,
               payload,
               { pythonPath: probe.pythonPath, helperPath },
-              options
+              {
+                ...options,
+                warningSink: {
+                  add: record,
+                  drain: () => []
+                }
+              }
             )
           : yield* runPython(
               probe.pythonPath,
@@ -806,7 +842,7 @@ const makeExecutionImpl = (
           )
         }
 
-        return {
+        return finish({
           displayPath,
           absPath: abs,
           kernelPath,
@@ -814,7 +850,7 @@ const makeExecutionImpl = (
           durationMs,
           saved: request.save && wrote,
           response: truncated
-        }
+        })
       }),
     reportEnv: (filePath, options) =>
       Effect.gen(function* () {
@@ -853,7 +889,8 @@ const makeExecutionImpl = (
           })
         }
 
-        const probe = yield* pythonSvc.probe()
+        const reportEnvSink = options?.warningSink ?? defaultSink
+        const probe = yield* pythonSvc.probe({ warningSink: reportEnvSink })
         if (probe.from === "none") {
           return yield* new NotebookNotImplementedError({
             message:
@@ -890,9 +927,16 @@ const makeExecutionImpl = (
             )
           })
         }
-        const envRealPath = yield* Effect.promise(() =>
-          fsp.realpath(abs).catch(() => abs)
-        )
+        const envRealPath = yield* Effect.promise(async () => {
+          try {
+            return await fsp.realpath(abs)
+          } catch (error) {
+            reportEnvSink?.add(
+              warningFrom("path-resolution", error, `env report path for ${abs}`)
+            )
+            return abs
+          }
+        })
         yield* pathSvc.ensureInsideWorktree(envRealPath)
         const payload: RunRequest = {
           ...envParsed.data,

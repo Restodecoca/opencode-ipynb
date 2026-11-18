@@ -102,7 +102,7 @@ export const ipynbInspectTool = tool({
     "Inspect a Jupyter Notebook (.ipynb) and return a compact summary (kernel, language, cell counts, output/error/large-output stats, cell table) without dumping the full JSON.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       await assertReadPermission(context, input.filePath)
       if (

@@ -1,4 +1,9 @@
 import { z } from "zod"
+import {
+  makeWarningSink,
+  type Warning,
+  type WarningSink
+} from "./utils/warnings.js"
 import type { Plugin } from "@opencode/plugin"
 import type {
   AnyToolDefinition,
@@ -95,7 +100,8 @@ export const toV2Result = (result: ToolResult): V2ToolResult => {
 export const toToolContext = (
   pluginContext: Plugin.Context,
   context: V2ToolContext,
-  pluginOptions: unknown
+  pluginOptions: unknown,
+  warningSink?: WarningSink
 ): ToolContext => ({
   sessionID: context.sessionID,
   messageID: context.messageID,
@@ -105,6 +111,7 @@ export const toToolContext = (
   abort: context.signal,
   pluginOptions,
   pluginScope: pluginContext,
+  warningSink,
   metadata: (input) => {
     void context
       .progress({
@@ -131,10 +138,35 @@ export const toToolContext = (
   }
 })
 
+const appendWarnings = (result: unknown, warnings: ReadonlyArray<Warning>) => {
+  const rendered = warnings
+    .map(
+      (warning) =>
+        `warning [${warning.source}]: ${warning.message}` +
+        (warning.detail === undefined ? "" : ` (${warning.detail})`)
+    )
+    .join("\n")
+  if (typeof result === "string") return `${result}\n\n${rendered}`
+  if (result !== null && typeof result === "object") {
+    const record = result as { output?: unknown; metadata?: Record<string, unknown> }
+    const output =
+      typeof record.output === "string"
+        ? `${record.output}\n\n${rendered}`
+        : rendered
+    return {
+      ...record,
+      output,
+      metadata: { ...(record.metadata ?? {}), warnings }
+    }
+  }
+  return result
+}
+
 export const toV2Tool = (
   pluginContext: Plugin.Context,
   registration: V2ToolRegistration,
-  pluginOptions: unknown = pluginContext.options
+  pluginOptions: unknown = pluginContext.options,
+  warningSink?: WarningSink
 ): V2ToolInfo => {
   const argsSchema = z.object(registration.definition.args)
   return {
@@ -155,11 +187,14 @@ export const toV2Tool = (
           .join("; ")
         return { content: `Error: ${message}`, metadata: { error: true, message } }
       }
+      const sink = warningSink ?? makeWarningSink()
       const result = await registration.definition.execute(
         parsed.data as never,
-        toToolContext(pluginContext, context, pluginOptions)
+        toToolContext(pluginContext, context, pluginOptions, sink)
       )
-      return toV2Result(result)
+      const warnings = sink.drain()
+      if (warnings.length === 0) return toV2Result(result)
+      return toV2Result(appendWarnings(result, warnings) as never)
     }
   }
 }

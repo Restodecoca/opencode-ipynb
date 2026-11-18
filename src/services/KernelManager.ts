@@ -11,6 +11,11 @@ import {
 } from "../domain/execution.js"
 import { helperSpawnEnv } from "./PythonService.js"
 import { MAX_HELPER_STDOUT_BYTES } from "../utils/limits.js"
+import {
+  type Warning,
+  type WarningSink,
+  warningFrom
+} from "../utils/warnings.js"
 
 
 export interface KernelManagerOptions {
@@ -18,6 +23,7 @@ export interface KernelManagerOptions {
   readonly helperPath: string
   readonly workingDirectory: string | undefined
   readonly defaultTimeoutMs: number
+  readonly warningSink?: WarningSink
 }
 
 export interface KernelRuntimeOptions {
@@ -31,6 +37,7 @@ export interface KernelInfo {
   readonly lastUsedAt: number
   readonly requestsHandled: number
   readonly stderrTail: string
+  readonly warnings?: ReadonlyArray<Warning>
 }
 
 export interface KernelManagerStats {
@@ -43,6 +50,7 @@ interface PendingRequest {
   reject: (err: PythonRunnerError) => void
   timer: NodeJS.Timeout
   cleanup?: () => void
+  sink?: WarningSink | undefined
 }
 
 interface KernelState {
@@ -62,12 +70,14 @@ interface KernelState {
   lastUsed: number
   requestsHandled: number
   stderrTail: string[]
+  warnings: Warning[]
   alive: boolean
   startedAt: number
   shutdownRequestId: number | undefined
 }
 
 const STDERR_TAIL_MAX = 20
+const KERNEL_WARNINGS_MAX = 20
 
 interface Deferred<A, E> {
   readonly promise: Promise<A>
@@ -185,7 +195,28 @@ const withTimeout = <T>(
 export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShape => {
   const states = new Map<string, KernelState>()
   const kernelLocks = new Map<string, Promise<void>>()
+  const sink = opts.warningSink
+  const reported = new Set<string>()
   let totalRequests = 0
+
+  const record = (state: KernelState, warning: Warning): void => {
+    const key = `${state.filePath}|${warning.source}|${warning.detail ?? warning.message}`
+    if (reported.has(key)) return
+    if (reported.size >= KERNEL_WARNINGS_MAX * 5) reported.clear()
+    reported.add(key)
+    if (state.warnings.length >= KERNEL_WARNINGS_MAX) state.warnings.shift()
+    state.warnings.push(warning)
+    if (sink !== undefined) sink.add(warning)
+    for (const pending of state.pending.values()) {
+      if (pending.sink !== undefined && pending.sink !== sink) pending.sink.add(warning)
+    }
+  }
+
+  const stopKernelInBackground = (filePath: string): void => {
+    void killKernel(filePath).catch((error: unknown) => {
+      sink?.add(warningFrom("cleanup", error, `stopping the warm kernel for ${filePath}`))
+    })
+  }
 
   const withKernelLock = async <T>(
     key: string,
@@ -267,6 +298,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       lastUsed: startedAt,
       requestsHandled: 0,
       stderrTail: [],
+      warnings: [],
       alive: true,
       startedAt,
       shutdownRequestId: undefined
@@ -289,10 +321,24 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       let msg: unknown
       try {
         msg = JSON.parse(line)
-      } catch {
+      } catch (error) {
+        record(
+          state,
+          warningFrom("python-probe", error, `ignored non-JSON kernel output: ${line.slice(0, 200)}`)
+        )
         return
       }
-      if (!msg || typeof msg !== "object") return
+      if (!msg || typeof msg !== "object") {
+        record(
+          state,
+          warningFrom(
+            "python-probe",
+            new Error("kernel emitted a non-object JSON line"),
+            `ignored: ${line.slice(0, 200)}`
+          )
+        )
+        return
+      }
       const m = msg as Record<string, unknown>
       if (!state.readyResolved && m.ready === true) {
         if (typeof m.kernelPid === "number" && m.kernelPid > 0) {
@@ -478,7 +524,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     request: RunRequest,
     runtimeInput?: KernelRuntimeOptions
   ): Promise<KernelState> => {
-    const key = await canonicalPath(filePath)
+    const key = await canonicalPathForKernel(filePath)
     return withKernelLock(key, () =>
       getOrStartUnlocked(key, request, runtimeFromRequest(runtimeInput))
     )
@@ -578,11 +624,24 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       }
     })
 
-  const canonicalPath = (filePath: string): Promise<string> =>
-    fsp.realpath(filePath).catch(() => filePath)
+  const canonicalPathForKernel = async (
+    filePath: string
+  ): Promise<string> => {
+    try {
+      return await fsp.realpath(filePath)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      const key = `path|${filePath}|${code ?? "EIO"}`
+      if (code !== "ENOENT" && !reported.has(key)) {
+        reported.add(key)
+        sink?.add(warningFrom("path-resolution", error, `kernel key for ${filePath}`))
+      }
+      return filePath
+    }
+  }
 
   const killKernel = async (inputPath: string): Promise<void> => {
-    const filePath = await canonicalPath(inputPath)
+    const filePath = await canonicalPathForKernel(inputPath)
     return withKernelLock(filePath, () => killKernelUnlocked(filePath))
   }
 
@@ -611,9 +670,12 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     filePath: string,
     request: RunRequest,
     runtime?: KernelRuntimeOptions,
-    options?: { readonly signal?: AbortSignal }
+    options?: {
+      readonly signal?: AbortSignal
+      readonly warningSink?: WarningSink
+    }
   ) {
-      const kernelPath = yield* Effect.promise(() => canonicalPath(filePath))
+      const kernelPath = yield* Effect.promise(() => canonicalPathForKernel(filePath))
       if (options?.signal?.aborted) {
         return yield* new PythonRunnerError({
           message: "warm kernel request aborted",
@@ -628,6 +690,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
             detail: err instanceof Error ? err.message : String(err)
           })
       })
+      const requestSink = options?.warningSink
       const timeoutMs = request.timeoutMs ?? opts.defaultTimeoutMs
       yield* Effect.tryPromise({
         try: () =>
@@ -636,7 +699,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
             timeoutMs,
             "warm kernel did not become ready before the timeout",
             options?.signal,
-            () => void killKernel(kernelPath)
+            () => stopKernelInBackground(kernelPath)
           ),
         catch: (err) =>
           err instanceof PythonRunnerError
@@ -654,7 +717,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               const handler = state.pending.get(id)
               handler?.cleanup?.()
               state.pending.delete(id)
-              void killKernel(kernelPath)
+              stopKernelInBackground(kernelPath)
               reject(
                 new PythonRunnerError({
                   message: `warm kernel request timed out after ${timeoutMs}ms`,
@@ -679,13 +742,14 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               cleanup: () => {
                 cleanupStdinError?.()
                 cleanupAbort?.()
-              }
+              },
+              ...(requestSink === undefined ? {} : { sink: requestSink })
             })
             const onAbort = () => {
               clearTimeout(timer)
               state.pending.delete(id)
               cleanupAbort?.()
-              void killKernel(kernelPath)
+              stopKernelInBackground(kernelPath)
               reject(
                 new PythonRunnerError({
                   message: "warm kernel request aborted",
@@ -784,7 +848,12 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     const key = (() => {
       try {
         return realpathSync(filePath)
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          sink?.add(
+            warningFrom("path-resolution", error, `kernel lookup for ${filePath}`)
+          )
+        }
         return filePath
       }
     })()
@@ -801,7 +870,8 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         pid: state.pid,
         lastUsedAt: state.lastUsed,
         requestsHandled: state.requestsHandled,
-        stderrTail: state.stderrTail.slice(-STDERR_TAIL_MAX).join("\n")
+        stderrTail: state.stderrTail.slice(-STDERR_TAIL_MAX).join("\n"),
+        warnings: [...state.warnings]
       })
     }
     return out
@@ -848,7 +918,10 @@ export interface KernelManagerShape {
     filePath: string,
     request: RunRequest,
     runtime?: KernelRuntimeOptions,
-    options?: { readonly signal?: AbortSignal }
+    options?: {
+      readonly signal?: AbortSignal
+      readonly warningSink?: WarningSink
+    }
   ) => Effect.Effect<RunResponse, NotebookError>
   readonly isRunning: (filePath: string) => boolean
   readonly list: () => ReadonlyArray<KernelInfo>

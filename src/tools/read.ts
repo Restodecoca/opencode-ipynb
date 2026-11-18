@@ -93,7 +93,7 @@ export const ipynbReadTool = tool({
       }
     }
     const input = parsed.data
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       await assertReadPermission(context, input.filePath)
       const pluginOpts = resolveToolOptions(context)

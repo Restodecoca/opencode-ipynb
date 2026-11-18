@@ -152,7 +152,7 @@ export const ipynbKernelTool = tool({
     "Inspect and manage the long-lived (warm) Python kernels used by ipynb_run when the `warmKernel` plugin option is set. Use 'status' to see whether the feature is on, 'list' to see the live kernels, 'restart' to stop the current kernel (the next run starts a new one), and 'shutdown' to release a kernel. When the warm kernel is disabled, this tool returns a clear message — the rest of the plugin is unaffected.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       const result = await runToolEffect(run(services, input, context))
       return {

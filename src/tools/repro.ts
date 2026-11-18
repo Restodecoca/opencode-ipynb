@@ -348,7 +348,7 @@ export const ipynbReproTool = tool({
     "Reproducibility report for a Jupyter Notebook: kernel + language (from kernelspec / language_info), Python interpreter version + executable + platform, top 50 lines of `pip freeze --local` (requires shell permission), and a static analysis of the notebook for things that hurt reproducibility (long source, non-deterministic patterns, missing packages, filesystem reads, random seeds). Does NOT execute notebook cells. Falls back to a partial report (warnings only) if Python is not on PATH.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       if (services.pythonPathError !== undefined) {
         const message = `Invalid pythonPath: ${services.pythonPathError}`

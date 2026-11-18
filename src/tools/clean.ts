@@ -35,7 +35,7 @@ export const ipynbCleanTool = tool({
     "Clean a Jupyter Notebook for Git/review by clearing outputs, execution counts, and widget state. Validates the notebook before and after, asks permission before writing, and returns a summary of what was changed.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       const result = await runToolEffect(
         services.clean.clean(input.filePath, {

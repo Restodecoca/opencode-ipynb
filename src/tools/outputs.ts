@@ -53,7 +53,7 @@ export const ipynbOutputsTool = tool({
     "Work with cell outputs: list (with pagination), read (per-cell), read_error, clear_cell, clear_all (cellIndex is 0-based). Always asks permission before clearing. Images and base64 payloads are omitted by default.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       if (input.operation !== "clear_cell" && input.operation !== "clear_all") {
         await assertReadPermission(context, input.filePath)

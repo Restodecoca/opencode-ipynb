@@ -26,7 +26,7 @@ export const ipynbCellMoveTool = tool({
     "Move a cell within a Jupyter Notebook from one index to another. Asks permission before writing. Returns the original and final index plus the (unchanged) total cell count.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       const result = await runToolEffect(
         services.edit.moveCell(

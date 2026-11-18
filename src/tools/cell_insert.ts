@@ -27,7 +27,7 @@ export const ipynbCellInsertTool = tool({
     "Insert a new cell into a Jupyter Notebook at the given index, or append to the end when index is omitted. The new cell starts with empty metadata; code cells also start with execution_count=null and outputs=[]. Asks permission before writing. Returns the new cell's index and the new total cell count.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       const result = await runToolEffect(
         services.edit.insertCell(

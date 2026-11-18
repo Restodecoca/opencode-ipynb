@@ -72,3 +72,22 @@ describe("writeAtomic temp handling", () => {
     })
   })
 })
+
+describe("revision re-check reporting", () => {
+  it("reports when the pre-write revision read fails", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "gone.ipynb")
+      const sink = makeWarningSink()
+      const svc = makeNotebookFileService({ warningSink: sink })
+      fs.writeFileSync(file, `${JSON.stringify(notebook(), null, 1)}\n`)
+      const before = fs.readFileSync(file, "utf8")
+      fs.rmSync(file)
+      const outcome = await run(
+        svc.writeAtomic(file, notebook() as never, { previousText: before })
+      )
+      expect(outcome.mode).toBeDefined()
+      const warnings = sink.drain()
+      expect(warnings.some((warning) => warning.source === "revision-check")).toBe(true)
+    })
+  })
+})

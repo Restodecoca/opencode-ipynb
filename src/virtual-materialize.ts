@@ -5,6 +5,12 @@ import { replaceFile } from "./utils/atomic-replace.js"
 import * as path from "node:path"
 import type { NotebookVirtualDocument } from "./lsp.js"
 import { sanitizeNotebookText } from "./notebook-diagnostics.js"
+import {
+  type Warning,
+  type WarningSink,
+  makeWarningSink,
+  warningFrom
+} from "./utils/warnings.js"
 
 export interface MaterializedCell {
   readonly cellIndex: number
@@ -17,6 +23,20 @@ export interface MaterializedDocument {
   readonly path: string
   readonly text: string
   readonly cells: ReadonlyArray<MaterializedCell>
+  readonly warnings?: ReadonlyArray<Warning>
+}
+
+export interface MaterializeOptions {
+  readonly warningSink?: WarningSink
+}
+
+export interface CleanupOptions {
+  readonly warningSink?: WarningSink
+}
+
+const isMissing = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === "ENOENT" || code === "ENOTDIR"
 }
 
 const SIDECAR_PREFIX = "opencode-ipynb-lsp-"
@@ -74,7 +94,8 @@ const activeSidecars = new Map<string, Set<string>>()
 const writeSidecar = async (
   worktree: string,
   filePath: string,
-  text: string
+  text: string,
+  sink: WarningSink | undefined
 ): Promise<string> => {
   const rootReal = await fsp.realpath(worktree)
   const target = materializedPath(filePath, worktree)
@@ -89,13 +110,20 @@ const writeSidecar = async (
   )
   try {
     await fsp.writeFile(temp, text, { encoding: "utf8", flag: "wx", mode: 0o600 })
-    const existing = await fsp.lstat(safeTarget).catch(() => undefined)
+    const existing = await fsp.lstat(safeTarget).catch((error: unknown) => {
+      if (!isMissing(error)) {
+        sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${safeTarget}`))
+      }
+      return undefined
+    })
     if (existing?.isDirectory()) {
       throw new Error(`Refusing to replace a directory: ${safeTarget}`)
     }
-    await replaceFile(temp, safeTarget)
+    await replaceFile(temp, safeTarget, sink)
   } catch (error) {
-    await fsp.rm(temp, { force: true }).catch(() => {})
+    await fsp.rm(temp, { force: true }).catch((cleanupError: unknown) => {
+      sink?.add(warningFrom("temp-unlink", cleanupError, `left ${temp}`))
+    })
     throw error
   }
   const tracked = activeSidecars.get(rootReal) ?? new Set<string>()
@@ -104,20 +132,36 @@ const writeSidecar = async (
   return target
 }
 
-const cleanupLegacyDirectory = async (rootReal: string): Promise<void> => {
+const cleanupLegacyDirectory = async (
+  rootReal: string,
+  sink: WarningSink | undefined
+): Promise<void> => {
   const directory = path.join(rootReal, LEGACY_DIRECTORY)
-  const stat = await fsp.lstat(directory).catch(() => undefined)
+  const stat = await fsp.lstat(directory).catch((error: unknown) => {
+    if (!isMissing(error)) {
+      sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${directory}`))
+    }
+    return undefined
+  })
   if (stat === undefined) return
   if (stat.isSymbolicLink()) {
     await fsp.rm(directory, { force: true })
     return
   }
-  const real = await fsp.realpath(directory).catch(() => undefined)
+  const real = await fsp.realpath(directory).catch((error: unknown) => {
+    if (!isMissing(error)) {
+      sink?.add(warningFrom("sidecar-cleanup", error, `resolving ${directory}`))
+    }
+    return undefined
+  })
   if (real === undefined || !inside(rootReal, real)) {
     throw new Error(`Refusing to clean a materialized directory outside the worktree`)
   }
   const now = Date.now()
-  const entries = await fsp.readdir(real, { withFileTypes: true }).catch(() => [])
+  const entries = await fsp.readdir(real, { withFileTypes: true }).catch((error: unknown) => {
+    sink?.add(warningFrom("sidecar-cleanup", error, `listing ${real}`))
+    return []
+  })
   await Promise.all(
     entries
       .filter(
@@ -127,63 +171,143 @@ const cleanupLegacyDirectory = async (rootReal: string): Promise<void> => {
       )
       .map(async (entry) => {
         const file = path.join(real, entry.name)
-        const info = await fsp.stat(file).catch(() => undefined)
+        const info = await fsp.stat(file).catch((error: unknown) => {
+          if (!isMissing(error)) {
+            sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${file}`))
+          }
+          return undefined
+        })
         if (info !== undefined && now - info.mtimeMs > MAX_AGE_MS) {
-          await fsp.rm(file, { force: true }).catch(() => {})
+          await fsp.rm(file, { force: true }).catch((error: unknown) => {
+            sink?.add(warningFrom("sidecar-cleanup", error, `removing ${file}`))
+          })
         }
       })
   )
-  await fsp.rmdir(real).catch(() => {})
-  await fsp.rmdir(path.dirname(real)).catch(() => {})
+  await fsp.rmdir(real).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY") {
+      sink?.add(warningFrom("sidecar-cleanup", error, `removing ${real}`))
+    }
+  })
+  await fsp.rmdir(path.dirname(real)).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY") {
+      sink?.add(
+        warningFrom("sidecar-cleanup", error, `removing ${path.dirname(real)}`)
+      )
+    }
+  })
 }
 
 export const materializeVirtualDocument = async (
   document: NotebookVirtualDocument,
-  worktree: string
+  worktree: string,
+  options?: MaterializeOptions
 ): Promise<MaterializedDocument> => {
-  const text = sanitizeNotebookText(document)
-  const file = await writeSidecar(worktree, document.filePath, text)
-  return {
-    path: file,
-    text,
-    cells: document.cells.map((cell) => ({
-      cellIndex: cell.cellIndex,
-      cellType: cell.cellType,
-      startLine: cell.startLine + 1,
-      endLine: Math.max(cell.startLine + 1, cell.endLine)
-    }))
+  const sink = makeWarningSink()
+  const forward = (): ReadonlyArray<Warning> => {
+    const warnings = sink.drain()
+    for (const warning of warnings) options?.warningSink?.add(warning)
+    return warnings
+  }
+  try {
+    const text = sanitizeNotebookText(document)
+    const file = await writeSidecar(worktree, document.filePath, text, sink)
+    const warnings = forward()
+    return {
+      path: file,
+      text,
+      cells: document.cells.map((cell) => ({
+        cellIndex: cell.cellIndex,
+        cellType: cell.cellType,
+        startLine: cell.startLine + 1,
+        endLine: Math.max(cell.startLine + 1, cell.endLine)
+      })),
+      ...(warnings.length === 0 ? {} : { warnings })
+    }
+  } catch (error) {
+    forward()
+    throw error
   }
 }
 
 export const refreshMaterializedDocument = async (
   document: NotebookVirtualDocument,
-  worktree: string
+  worktree: string,
+  options?: MaterializeOptions
 ): Promise<boolean> => {
   const existing = await fsp
     .lstat(materializedPath(document.filePath, worktree))
-    .catch(() => undefined)
+    .catch((error: unknown) => {
+      if (!isMissing(error)) {
+        options?.warningSink?.add(
+          warningFrom(
+            "sidecar-cleanup",
+            error,
+            `inspecting ${materializedPath(document.filePath, worktree)}`
+          )
+        )
+      }
+      return undefined
+    })
   if (existing === undefined) return false
-  await writeSidecar(worktree, document.filePath, sanitizeNotebookText(document))
+  await writeSidecar(
+    worktree,
+    document.filePath,
+    sanitizeNotebookText(document),
+    options?.warningSink
+  )
   return true
 }
 
 export const hasMaterializedDocument = async (
   worktree: string,
-  filePath: string
+  filePath: string,
+  options?: MaterializeOptions
 ): Promise<boolean> => {
-  const rootReal = await fsp.realpath(worktree).catch(() => undefined)
+  const sink = options?.warningSink
+  const rootReal = await fsp.realpath(worktree).catch((error: unknown) => {
+    if (!isMissing(error)) {
+      sink?.add(warningFrom("sidecar-cleanup", error, `resolving ${worktree}`))
+    }
+    return undefined
+  })
   if (rootReal === undefined) return false
   const target = materializedPath(filePath, worktree)
   const targetDirReal = await fsp
     .realpath(path.dirname(target))
-    .catch(() => undefined)
+    .catch((error: unknown) => {
+      if (!isMissing(error)) {
+        sink?.add(
+          warningFrom(
+            "sidecar-cleanup",
+            error,
+            `resolving ${path.dirname(target)}`
+          )
+        )
+      }
+      return undefined
+    })
   if (targetDirReal === undefined || !inside(rootReal, targetDirReal)) return false
-  const stat = await fsp.lstat(target).catch(() => undefined)
+  const stat = await fsp.lstat(target).catch((error: unknown) => {
+    if (!isMissing(error)) {
+      sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${target}`))
+    }
+    return undefined
+  })
   return stat !== undefined
 }
 
-export const cleanupVirtualDocuments = async (worktree: string): Promise<void> => {
-  const rootReal = await fsp.realpath(worktree).catch(() => undefined)
+export const cleanupVirtualDocuments = async (
+  worktree: string,
+  options?: CleanupOptions
+): Promise<void> => {
+  const sink = options?.warningSink
+  const rootReal = await fsp.realpath(worktree).catch((error: unknown) => {
+    if (!isMissing(error)) {
+      sink?.add(warningFrom("sidecar-cleanup", error, `resolving ${worktree}`))
+    }
+    return undefined
+  })
   if (rootReal === undefined) return
   const tracked = activeSidecars.get(rootReal)
   if (tracked !== undefined) {
@@ -191,16 +315,30 @@ export const cleanupVirtualDocuments = async (worktree: string): Promise<void> =
       [...tracked].map(async (file) => {
         const parentReal = await fsp
           .realpath(path.dirname(file))
-          .catch(() => undefined)
+          .catch((error: unknown) => {
+            if (!isMissing(error)) {
+              sink?.add(
+                warningFrom("sidecar-cleanup", error, `resolving ${path.dirname(file)}`)
+              )
+            }
+            return undefined
+          })
         if (parentReal === undefined || !inside(rootReal, parentReal)) return
         const target = path.join(parentReal, path.basename(file))
-        const stat = await fsp.lstat(target).catch(() => undefined)
+        const stat = await fsp.lstat(target).catch((error: unknown) => {
+          if (!isMissing(error)) {
+            sink?.add(warningFrom("sidecar-cleanup", error, `inspecting ${target}`))
+          }
+          return undefined
+        })
         if (stat !== undefined && !stat.isDirectory()) {
-          await fsp.rm(target, { force: true }).catch(() => {})
+          await fsp.rm(target, { force: true }).catch((error: unknown) => {
+            sink?.add(warningFrom("sidecar-cleanup", error, `removing ${target}`))
+          })
         }
       })
     )
     activeSidecars.delete(rootReal)
   }
-  await cleanupLegacyDirectory(rootReal)
+  await cleanupLegacyDirectory(rootReal, sink)
 }

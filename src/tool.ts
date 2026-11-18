@@ -11,6 +11,7 @@ export interface ToolContext {
   readonly abort: AbortSignal
   readonly pluginOptions?: unknown
   readonly pluginScope?: object
+  readonly warningSink?: import("./utils/warnings.js").WarningSink | undefined
   metadata(input: {
     title?: string
     metadata?: Record<string, any>

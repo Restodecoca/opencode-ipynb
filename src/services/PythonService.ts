@@ -5,6 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { Effect } from "effect"
 import { PermissionDeniedError } from "../domain/errors.js"
+import { type WarningSink, warningFrom } from "../utils/warnings.js"
 
 const HELPER_ENV_KEYS = [
   "PYTHONPATH",
@@ -57,8 +58,12 @@ export interface PythonServiceOptions {
   readonly pythonSource?: "options" | "env" | undefined
 }
 
+export interface ProbeOptions {
+  readonly warningSink?: WarningSink | undefined
+}
+
 export interface PythonServiceShape {
-  readonly probe: () => Effect.Effect<PythonProbeResult, never>
+  readonly probe: (options?: ProbeOptions) => Effect.Effect<PythonProbeResult, never>
   readonly candidates: () => Effect.Effect<ReadonlyArray<PythonProbeResult>, never>
   readonly checkDependencies: (
     pythonPath: string
@@ -95,7 +100,10 @@ const probeEnv = (): NodeJS.ProcessEnv => {
   return env
 }
 
-const probeOnce = (executable: string): Promise<PythonProbeResult | null> =>
+const probeOnce = (
+  executable: string,
+  onFailure?: (reason: string) => void
+): Promise<PythonProbeResult | null> =>
   new Promise((resolve) => {
     const child = spawn(
       executable,
@@ -125,6 +133,7 @@ const probeOnce = (executable: string): Promise<PythonProbeResult | null> =>
     }
     const timer = setTimeout(() => {
       kill()
+      onFailure?.(`timed out after ${PROBE_TIMEOUT_MS}ms`)
       resolve(null)
     }, PROBE_TIMEOUT_MS)
     child.stdout.on("data", (chunk: Buffer) => {
@@ -139,13 +148,19 @@ const probeOnce = (executable: string): Promise<PythonProbeResult | null> =>
       stderrBytes += take.length
       stderrChunks.push(take)
     })
-    child.on("error", () => {
+    child.on("error", (error) => {
       clearTimeout(timer)
+      const code = (error as NodeJS.ErrnoException).code
+      onFailure?.(code ?? error.message)
       resolve(null)
     })
     child.on("close", (code) => {
       clearTimeout(timer)
       if (code !== 0) {
+        const stderr = Buffer.concat(stderrChunks).toString("utf8").trim()
+        onFailure?.(
+          stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? `exited with code ${code}`
+        )
         resolve(null)
         return
       }
@@ -159,9 +174,10 @@ const probeOnce = (executable: string): Promise<PythonProbeResult | null> =>
 
 const probeWithFrom = async (
   executable: string,
-  from: PythonProbeResult["from"]
+  from: PythonProbeResult["from"],
+  onFailure?: (reason: string) => void
 ): Promise<PythonProbeResult | null> => {
-  const result = await probeOnce(executable)
+  const result = await probeOnce(executable, onFailure)
   if (!result) return null
   return { ...result, from }
 }
@@ -623,9 +639,26 @@ const makePythonImpl = (
   let selectedProbe: PythonProbeResult | undefined
   let selectedCheckedAt = 0
   let selectedProbed = false
+  let configuredProbeFailure: string | undefined
 
-  const probe = (): Effect.Effect<PythonProbeResult, never> =>
+  const warnConfiguredProbeFailure = (sink: WarningSink): void => {
+    const configured = opts.pythonPath
+    if (configured === undefined || configured.length === 0) return
+    sink.add(
+      warningFrom(
+        "python-probe",
+        new Error(
+          configuredProbeFailure ??
+            "the configured python interpreter did not run"
+        ),
+        `pythonPath=${configured}`
+      )
+    )
+  }
+
+  const probe = (options?: ProbeOptions): Effect.Effect<PythonProbeResult, never> =>
     Effect.gen(function* () {
+      const sink = options?.warningSink
       const now = Date.now()
       if (
         probed &&
@@ -638,18 +671,27 @@ const makePythonImpl = (
         return selectedProbe
       }
       if (selectedProbed && now - selectedCheckedAt < PROBE_TTL_MS) {
+        if (sink !== undefined) warnConfiguredProbeFailure(sink)
         return selectedProbe!
       }
-      for (const attempt of selectedSpecs()) {
+      const specs = selectedSpecs()
+      for (const attempt of specs) {
         const found = yield* Effect.promise(() =>
-          probeWithFrom(attempt.executable, attempt.from)
+          probeWithFrom(attempt.executable, attempt.from, (reason) => {
+            configuredProbeFailure = reason
+          })
         )
         if (found) {
+          configuredProbeFailure = undefined
           selectedProbe = found
           selectedCheckedAt = Date.now()
           selectedProbed = true
           return found
         }
+      }
+      if (specs.length === 0) {
+        configuredProbeFailure =
+          "the configured path is not an absolute interpreter or PATH name"
       }
       selectedProbe = {
         pythonPath: opts.pythonPath ?? "python",
@@ -659,6 +701,7 @@ const makePythonImpl = (
       }
       selectedCheckedAt = Date.now()
       selectedProbed = true
+      if (sink !== undefined) warnConfiguredProbeFailure(sink)
       return selectedProbe
     })
   const allCandidates = (): Effect.Effect<ReadonlyArray<PythonProbeResult>, never> =>

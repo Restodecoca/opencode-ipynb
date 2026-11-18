@@ -21,7 +21,7 @@ export const ipynbCellDeleteTool = tool({
     "Delete a cell from a Jupyter Notebook by index. Asks permission before writing. Returns the deleted cell's type, a short preview of its source, and the new total cell count.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       await assertReadPermission(context, input.filePath)
       const result = await runToolEffect(

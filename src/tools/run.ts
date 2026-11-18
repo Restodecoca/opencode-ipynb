@@ -42,7 +42,7 @@ export const ipynbRunTool = tool({
     "Execute a cell, range, or full notebook via the Python helper (nbclient; cellIndex is 0-based). The plugin never installs Python dependencies; it only detects them and returns a clear error if anything is missing. Use ipynb_doctor first if you are unsure about the environment.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     const pluginOpts = resolveToolOptions(context)
     const maxOutputChars = input.maxOutputChars ?? pluginOpts.defaultMaxOutputChars
     const timeoutMs = input.timeoutMs ?? pluginOpts.defaultTimeoutMs

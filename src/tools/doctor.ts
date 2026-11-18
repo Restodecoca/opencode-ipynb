@@ -24,7 +24,7 @@ export const ipynbDoctorTool = tool({
     "Diagnose the opencode-ipynb environment: which Python interpreter was found, where the helper lives, which Jupyter dependencies are available, and how to fix anything that is missing. Never installs anything.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       if (services.pythonPathError !== undefined) {
         const message = `Invalid pythonPath: ${services.pythonPathError}`

@@ -18,6 +18,7 @@ import { makeExportImpl, type NotebookExportServiceShape } from "./NotebookExpor
 import { makeExecutionImpl, type NotebookExecutionServiceShape } from "./NotebookExecutionService.js"
 import { makePythonService, type PythonServiceShape } from "./PythonService.js"
 import { makeKernelManager, type KernelManagerShape } from "./KernelManager.js"
+import type { WarningSink } from "../utils/warnings.js"
 
 export { type PathServiceShape, type PathEnv, makePathService } from "./PathService.js"
 export { type PermissionServiceShape, type PermissionRequest, type PermissionKind, makePermissionService } from "./PermissionService.js"
@@ -132,18 +133,30 @@ export const disposeSharedKernelManager = async (scope?: object): Promise<void> 
   await Promise.all(managers.map((manager) => Effect.runPromise(manager.disposeAll())))
 }
 
-export const buildServices = (ctx: ToolContext): NotebookServices => {
+export interface BuildServicesOptions {
+  readonly warningSink?: WarningSink | undefined
+}
+
+export const buildServices = (
+  ctx: ToolContext,
+  options: BuildServicesOptions = {}
+): NotebookServices => {
   const resolved = resolveOptionsFromEnv(ctx.pluginOptions)
+  const warningSink = options.warningSink
   const pathSvc: PathServiceShape = makePathService({
     directory: ctx.directory,
     worktree: ctx.worktree,
     platform: process.platform,
-    allowOutsideWorktree: resolved.allowOutsideWorktree
+    allowOutsideWorktree: resolved.allowOutsideWorktree,
+    warningSink
   })
-  const permissionSvc: PermissionServiceShape = makePermissionService(ctx)
-  const fileSvc: NotebookFileServiceShape = makeNotebookFileService(
-    resolved.allowOutsideWorktree ? {} : { worktree: ctx.worktree }
-  )
+  const permissionSvc: PermissionServiceShape = makePermissionService(ctx, {
+    warningSink
+  })
+  const fileSvc: NotebookFileServiceShape = makeNotebookFileService({
+    ...(resolved.allowOutsideWorktree ? {} : { worktree: ctx.worktree }),
+    warningSink
+  })
   let pythonPath: string | undefined
   let pythonPathError: string | undefined
   try {

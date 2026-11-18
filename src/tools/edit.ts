@@ -23,7 +23,7 @@ export const ipynbEditTool = tool({
     "Edit a single cell of a Jupyter Notebook safely (cellIndex is 0-based). Validates before and after, preserves metadata, asks permission before writing, and returns a concise confirmation. For code cells, the default 'auto' mode clears outputs and execution_count when the source changes.",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       const result = await runToolEffect(
         services.edit.editCell(input.filePath, {

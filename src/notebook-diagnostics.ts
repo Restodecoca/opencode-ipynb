@@ -13,6 +13,7 @@ import {
   type NotebookVirtualDocument
 } from "./lsp.js"
 import { PermissionDeniedError } from "./domain/errors.js"
+import { type Warning, type WarningSink, warningFrom } from "./utils/warnings.js"
 
 const MAX_ERRORS = 20
 
@@ -39,12 +40,14 @@ export interface NotebookDiagnosticsOptions {
   readonly pyrightPath?: string
   readonly timeoutMs?: number
   readonly signal?: AbortSignal
+  readonly warningSink?: WarningSink
 }
 
 export interface NotebookDiagnosticsResult {
   readonly filePath: string
   readonly diagnostics: ReadonlyArray<NotebookDiagnostic>
   readonly text: string
+  readonly warnings?: ReadonlyArray<Warning>
   readonly skipped?:
     | "pyright-not-found"
     | "timeout"
@@ -56,6 +59,11 @@ export interface NotebookDiagnosticsResult {
 }
 
 class TempFileError extends Error {}
+
+const isMissingPath = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === "ENOENT" || code === "ENOTDIR"
+}
 
 interface PyrightDiagnostic {
   readonly file: string
@@ -510,17 +518,41 @@ export const diagnoseNotebook = async (
   if (options.signal?.aborted) {
     return { filePath, diagnostics: [], text: "", skipped: "aborted" }
   }
-  const directory = path.dirname(realFilePath(filePath))
+  const collected: Warning[] = []
+  const record = (warning: Warning): void => {
+    collected.push(warning)
+    options.warningSink?.add(warning)
+  }
+  let resolvedFile = filePath
+  try {
+    resolvedFile = realpathSync(filePath)
+  } catch (error) {
+    record(warningFrom("path-resolution", error, `resolving ${filePath}`))
+  }
+  const directory = path.dirname(resolvedFile)
   const explicitTemp = options.tempFilePath
   const owned = options.ownedTempFile === true || explicitTemp === undefined
   let tempFile = explicitTemp ?? diagnosticTempPath(filePath)
-  return withDiagnosticLock(tempFile, async () => {
+  const result: NotebookDiagnosticsResult = await withDiagnosticLock(tempFile, async () => {
     if (options.signal?.aborted) {
-      return { filePath, diagnostics: [], text: "", skipped: "aborted" }
+      return { filePath, diagnostics: [], text: "", skipped: "aborted" as const }
+    }
+    const closeHandle = async (
+      handle: Awaited<ReturnType<typeof fsp.open>>,
+      file: string
+    ): Promise<void> => {
+      await handle.close().catch((error: unknown) => {
+        record(warningFrom("temp-unlink", error, `closing ${file}`))
+      })
     }
     const openTemp = async (file: string): Promise<void> => {
       if (!owned) {
-        const existing = await fsp.lstat(file).catch(() => undefined)
+        const existing = await fsp.lstat(file).catch((error: unknown) => {
+          if (!isMissingPath(error)) {
+            record(warningFrom("path-resolution", error, `inspecting ${file}`))
+          }
+          return undefined
+        })
         if (existing !== undefined) {
           throw new Error(`refusing to overwrite caller-supplied temp file: ${file}`)
         }
@@ -531,12 +563,19 @@ export const diagnoseNotebook = async (
             mode: 0o600
           })
         } catch (error) {
-          await fsp.rm(file, { force: true }).catch(() => {})
+          await fsp.rm(file, { force: true }).catch((cleanupError: unknown) => {
+            record(warningFrom("temp-unlink", cleanupError, `left ${file}`))
+          })
           throw error
         }
         return
       }
-      const existing = await fsp.lstat(file).catch(() => undefined)
+      const existing = await fsp.lstat(file).catch((error: unknown) => {
+        if (!isMissingPath(error)) {
+          record(warningFrom("path-resolution", error, `inspecting ${file}`))
+        }
+        return undefined
+      })
       if (existing?.isSymbolicLink()) {
         throw new TempFileError(`refusing to follow a symlink at ${file}`)
       }
@@ -571,7 +610,7 @@ export const diagnoseNotebook = async (
         const opened = await handle.stat()
         const uid = typeof process.getuid === "function" ? process.getuid() : undefined
         if (!opened.isFile() || opened.nlink > 1) {
-          await handle.close().catch(() => {})
+          await closeHandle(handle, file)
           throw new TempFileError(`refusing to write a linked/non-regular temp file at ${file}`)
         }
         if (
@@ -580,14 +619,16 @@ export const diagnoseNotebook = async (
             existing !== undefined &&
             (opened.mode & 0o077) !== 0)
         ) {
-          await handle.close().catch(() => {})
+          await closeHandle(handle, file)
           throw new TempFileError(`refusing a temp file with unsafe ownership/mode: ${file}`)
         }
         await handle.truncate(0)
         await handle.writeFile(text, "utf8")
       } catch (error) {
-        await handle.close().catch(() => {})
-        await fsp.rm(file, { force: true }).catch(() => {})
+        await closeHandle(handle, file)
+        await fsp.rm(file, { force: true }).catch((cleanupError: unknown) => {
+          record(warningFrom("temp-unlink", cleanupError, `left ${file}`))
+        })
         throw error
       }
       await handle.close()
@@ -748,7 +789,12 @@ export const diagnoseNotebook = async (
                 : "invalid-output"
       }
     } finally {
-      if (wroteTemp) await fsp.rm(tempFile, { force: true }).catch(() => {})
+      if (wroteTemp) {
+        await fsp.rm(tempFile, { force: true }).catch((error: unknown) => {
+          record(warningFrom("temp-unlink", error, `left ${tempFile}`))
+        })
+      }
     }
   })
+  return collected.length === 0 ? result : { ...result, warnings: collected }
 }

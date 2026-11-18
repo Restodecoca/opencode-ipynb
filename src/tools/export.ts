@@ -36,7 +36,7 @@ export const ipynbExportTool = tool({
     "Export a Jupyter Notebook to markdown, python, or a textual summary. Optionally write the result to a file (after permission).",
   args,
   async execute(input: z.infer<z.ZodObject<typeof args>>, context: ToolContext) {
-    const services = buildServices(context)
+    const services = buildServices(context, { warningSink: context.warningSink })
     try {
       await assertReadPermission(context, input.filePath)
       const result = await runToolEffect(
