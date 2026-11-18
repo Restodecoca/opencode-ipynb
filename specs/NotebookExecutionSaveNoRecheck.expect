@@ -1,2 +1,1 @@
-Invariant NoStaleSave is violated
-Exit code: 1
+Invariant SavedVersionMatches is violated

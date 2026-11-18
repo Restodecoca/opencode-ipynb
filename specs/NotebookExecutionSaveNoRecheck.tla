@@ -1,29 +1,32 @@
 ---------------- MODULE NotebookExecutionSaveNoRecheck ----------------
 EXTENDS Naturals
 
-VARIABLES stage, snapshot, disk, lastSaveStale
+\* The dishonest twin of NotebookExecutionSave: the save skips the
+\* under-lock recheck and lands whatever version it likes.
+
+VARIABLES stage, snapshot, disk, savedVersion
 
 Init ==
   /\ stage = "idle"
   /\ snapshot = 0
   /\ disk = 0
-  /\ lastSaveStale = FALSE
+  /\ savedVersion = 0
 
 ReadSnapshot ==
   /\ stage = "idle"
   /\ snapshot' = disk
   /\ stage' = "executing"
-  /\ UNCHANGED <<disk, lastSaveStale>>
+  /\ UNCHANGED <<disk, savedVersion>>
 
 ExternalWrite ==
   /\ disk' = disk + 1
-  /\ UNCHANGED <<stage, snapshot, lastSaveStale>>
+  /\ UNCHANGED <<stage, snapshot, savedVersion>>
 
 SaveWithoutRecheck ==
   /\ stage = "executing"
   /\ disk' = disk + 1
+  /\ savedVersion' = disk'
   /\ stage' = "saved"
-  /\ lastSaveStale' = (disk /= snapshot)
   /\ UNCHANGED snapshot
 
 Next ==
@@ -31,18 +34,18 @@ Next ==
   \/ ExternalWrite
   \/ SaveWithoutRecheck
 
-Spec == Init /\ [][Next]_<<stage, snapshot, disk, lastSaveStale>>
+Spec == Init /\ [][Next]_<<stage, snapshot, disk, savedVersion>>
 
 TypeOK ==
   /\ stage \in {"idle", "executing", "saved"}
   /\ snapshot \in Nat
   /\ disk \in Nat
-  /\ lastSaveStale \in BOOLEAN
+  /\ savedVersion \in Nat
 
 StateConstraint ==
   disk <= 3
 
-NoStaleSave ==
-  lastSaveStale = FALSE
+SavedVersionMatches ==
+  stage = "saved" => savedVersion = snapshot + 1
 
-=============================================================================
+=====================================
