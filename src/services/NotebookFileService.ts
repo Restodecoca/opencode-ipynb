@@ -12,6 +12,7 @@ import {
 } from "../domain/errors.js"
 import { NotebookSchema, applyNotebookDefaults, type NotebookRaw } from "../domain/notebook.js"
 import type { PatchFailureReason, WriteMode } from "../utils/json.js"
+import { type WarningSink, warningFrom } from "../utils/warnings.js"
 
 export type { WriteMode }
 
@@ -32,6 +33,7 @@ import { replaceFile } from "../utils/atomic-replace.js"
 
 interface NotebookFileServiceOptions {
   readonly worktree?: string
+  readonly warningSink?: WarningSink
 }
 
 const inside = (root: string, target: string): boolean => {
@@ -105,6 +107,7 @@ const buildFileService = (
   options: NotebookFileServiceOptions = {}
 ): NotebookFileServiceShape => {
   const worktree = options.worktree
+  const warningSink = options.warningSink
   const resolveInside = async (filePath: string): Promise<string> => {
     if (worktree === undefined) return filePath
     const root = await fsp.realpath(worktree).catch(() => worktree)
@@ -400,9 +403,15 @@ const buildFileService = (
             if (existingMode !== undefined) await fsp.chmod(tmp, existingMode)
             await replaceFile(tmp, target)
           } catch (err) {
-            await fsp.unlink(tmp).catch((e: NodeJS.ErrnoException) => {
-              if (e.code !== "ENOENT") throw e
-            })
+            try {
+              await fsp.unlink(tmp)
+            } catch (unlinkError) {
+              if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") {
+                warningSink?.add(
+                  warningFrom("temp-unlink", unlinkError, `left ${tmp}`)
+                )
+              }
+            }
             throw err
           }
           return rewrite
