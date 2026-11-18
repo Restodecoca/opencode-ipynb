@@ -466,7 +466,7 @@ const buildFileService = (
               await handle.close()
             }
             if (existingMode !== undefined) await fsp.chmod(tmp, existingMode)
-            await replaceFile(tmp, target)
+            await replaceFile(tmp, target, warningSink)
           } catch (err) {
             try {
               await fsp.unlink(tmp)

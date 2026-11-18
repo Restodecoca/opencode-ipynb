@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import { Effect } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -88,6 +88,53 @@ describe("revision re-check reporting", () => {
       expect(outcome.mode).toBeDefined()
       const warnings = sink.drain()
       expect(warnings.some((warning) => warning.source === "revision-check")).toBe(true)
+    })
+  })
+})
+
+describe("atomic replace fallback warnings", () => {
+  it("reports a failed backup attempt on the windows fallback path", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "n.ipynb")
+      fs.writeFileSync(file, `${JSON.stringify(notebook(), null, 1)}\n`)
+      const sink = makeWarningSink()
+      const svc = makeNotebookFileService({ warningSink: sink })
+      const original = fs.promises.rename
+      let calls = 0
+      const spy = spyOn(fs.promises, "rename").mockImplementation((((
+        from: fs.PathLike,
+        to: fs.PathLike
+      ) => {
+        calls += 1
+        if (calls <= 2) {
+          return Promise.reject(Object.assign(new Error("rename denied"), { code: "EPERM" }))
+        }
+        return original(from, to)
+      }) as unknown as typeof fs.promises.rename))
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform"
+      ) as PropertyDescriptor
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true })
+      try {
+        const outcome = await run(
+          svc.writeAtomic(file, {
+            cells: [{ cell_type: "markdown", metadata: {}, source: ["# B"] }],
+            metadata: {},
+            nbformat: 4,
+            nbformat_minor: 5
+          } as never)
+        )
+        expect(outcome.mode).toBeDefined()
+        expect(fs.readFileSync(file, "utf8")).toContain("# B")
+        const warnings = sink.drain()
+        expect(warnings.length).toBe(1)
+        expect(warnings[0]?.source).toBe("atomic-replace")
+        expect(warnings[0]?.detail).toContain("backup before replace")
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor)
+        spy.mockRestore()
+      }
     })
   })
 })
