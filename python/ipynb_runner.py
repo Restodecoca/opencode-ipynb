@@ -686,6 +686,23 @@ def _run_serve_request(
     # omits it — keep the wire format terse for the hot path.
     if "filePath" not in req and isinstance(file_path, str):
         req["filePath"] = file_path
+    requested_path = req.get("filePath")
+    if (
+        isinstance(requested_path, str)
+        and isinstance(file_path, str)
+        and os.path.realpath(requested_path) != os.path.realpath(file_path)
+    ):
+        # One serve process owns one kernel for one notebook. Executing a
+        # different notebook would silently run against the init document.
+        return _error_response(
+            req,
+            started,
+            "PythonRunnerError",
+            "NotebookMismatch",
+            f"request names {requested_path}, but this kernel serves {file_path}",
+            -1,
+            request_id=req_id,
+        )
     try:
         _validate_request(req)
     except Exception as exc:

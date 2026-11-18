@@ -876,7 +876,8 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
             cleanupAbort = () =>
               options?.signal?.removeEventListener("abort", onAbort)
             try {
-              const payload = JSON.stringify({ id, nonce, ...request }) + "\n"
+              const payload =
+                JSON.stringify({ ...request, filePath: kernelPath, id, nonce }) + "\n"
               const stdin = state.proc.stdin
               if (!stdin || !stdin.writable) {
                 state.pending.delete(id)
