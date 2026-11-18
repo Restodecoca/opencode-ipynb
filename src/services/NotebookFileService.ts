@@ -270,7 +270,11 @@ const buildFileService = (
               })
             }
           } finally {
-            await handle.close().catch(() => {})
+            await handle.close().catch((error: unknown) => {
+              warningSink?.add(
+                warningFrom("cleanup", error, `closing ${filePath}`)
+              )
+            })
           }
         } catch (err) {
           const code = (err as NodeJS.ErrnoException).code
@@ -511,7 +515,43 @@ const buildFileService = (
               await handle.close()
             }
             if (existingMode !== undefined) await fsp.chmod(tmp, existingMode)
+            const tempStat = await fsp.stat(tmp).catch((error: unknown) => {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+                warningSink?.add(
+                  warningFrom("revision-check", error, `inspecting ${tmp}`)
+                )
+              }
+              return undefined
+            })
             await replaceFile(tmp, target, warningSink)
+            const finalStat = await fsp.stat(target).catch((error: unknown) => {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+                warningSink?.add(
+                  warningFrom(
+                    "revision-check",
+                    error,
+                    `inspecting ${target} after the write`
+                  )
+                )
+              }
+              return undefined
+            })
+            if (
+              tempStat !== undefined &&
+              finalStat !== undefined &&
+              tempStat.ino !== 0 &&
+              finalStat.ino !== 0 &&
+              tempStat.ino !== finalStat.ino
+            ) {
+              throw new NotebookValidationError({
+                message:
+                  "another process replaced the notebook right after the write",
+                filePath,
+                issues: [
+                  "the notebook was written concurrently; re-read it and retry the edit"
+                ]
+              })
+            }
             if (previousText !== undefined && rewrite.mode !== "patched") {
               warningSink?.add(
                 warningFrom(
