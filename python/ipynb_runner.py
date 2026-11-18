@@ -128,6 +128,17 @@ def _run_pip_freeze(python_executable: str, timeout_s: int = 30) -> List[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _teardown_client(client: Any) -> None:
+    """Release whatever the installed nbclient version exposes."""
+    for name in ("shutdown_kernel", "cleanup_kernel", "cleanup_resources"):
+        method = getattr(client, name, None)
+        if callable(method):
+            try:
+                method()
+            except Exception:
+                pass
+
+
 def _kernel_pid(client: Any) -> Optional[int]:
     km = getattr(client, "km", None)
     provisioner = getattr(km, "provisioner", None)
@@ -783,19 +794,19 @@ def _run_serve_request(
             traceback.format_exception(exc),
             request_id=req_id,
         )
+        # A kernel that died under nbclient leaves the client bound to a dead
+        # process; tear it down so the next request starts a fresh kernel
+        # instead of failing until an explicit restart.
+        if type(exc).__name__ in ("DeadKernelError", "KernelRestartRequired"):
+            _kill_kernel_process_group(client)
+            _teardown_client(client)
+            raise KernelBroken("kernel died during execution") from exc
         if type(exc).__name__ == "CellTimeoutError":
             # nbclient leaves the cell running. Kill the kernel and its
             # descendants so the next request starts clean instead of
             # queueing behind a runaway cell.
             _kill_kernel_process_group(client)
-            try:
-                client.shutdown_kernel()
-            except Exception:
-                pass
-            try:
-                client.cleanup_kernel()
-            except Exception:
-                pass
+            _teardown_client(client)
             raise KernelBroken("kernel stopped after a cell timeout") from exc
         return response
 

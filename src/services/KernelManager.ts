@@ -327,8 +327,10 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
 
     const handleLine = (line: string): void => {
       if (!line.trim()) return
-      if (line.length > MAX_HELPER_STDOUT_BYTES) {
+      if (Buffer.byteLength(line, "utf8") > MAX_HELPER_STDOUT_BYTES) {
         for (const handler of state.pending.values()) {
+          clearTimeout(handler.timer)
+          handler.cleanup?.()
           handler.reject(
             new PythonRunnerError({
               message: `kernel response exceeded ${MAX_HELPER_STDOUT_BYTES} bytes`,
@@ -409,6 +411,14 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
             detail: ""
           })
         )
+        if (
+          ename === "KernelRestartRequired" ||
+          ename === "DeadKernelError" ||
+          (ename === "PythonRunnerError" && evalue.includes("kernel"))
+        ) {
+          state.alive = false
+          if (states.get(state.filePath) === state) forgetState(state.filePath)
+        }
         return
       }
       handler.resolve(m as unknown as RunResponse)
