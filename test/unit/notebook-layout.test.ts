@@ -1093,3 +1093,53 @@ describe("ASCII escape detection", () => {
     expect(detect(`{\n "n": "café — 中文"\n}\n`)).toBe(false)
   })
 })
+
+describe("defaults respect the file's existing key order", () => {
+  const apply = async (raw: Record<string, unknown>) => {
+    const { applyNotebookDefaults } = await import("../../src/domain/notebook.js")
+    return applyNotebookDefaults(raw) as Record<string, unknown>
+  }
+
+  it("inserts sorted when the object is already sorted", async () => {
+    const out = await apply({
+      cells: [{ cell_type: "code", execution_count: null, metadata: {}, source: ["x"] }],
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+    expect(Object.keys(out)).toEqual(["cells", "metadata", "nbformat", "nbformat_minor"])
+    expect(
+      Object.keys((out.cells as Array<Record<string, unknown>>)[0]!)
+    ).toEqual([
+      "cell_type",
+      "execution_count",
+      "metadata",
+      "outputs",
+      "source"
+    ])
+  })
+
+  it("appends instead of reordering an unsorted object", async () => {
+    const out = await apply({
+      cells: [
+        { source: ["x"], metadata: {}, execution_count: null, cell_type: "code" }
+      ],
+      nbformat_minor: 5,
+      nbformat: 4
+    })
+    expect(Object.keys(out)).toEqual(["cells", "nbformat_minor", "nbformat", "metadata"])
+  })
+
+  it("leaves an object that already has the key untouched", async () => {
+    const cell = {
+      cell_type: "code",
+      execution_count: null,
+      metadata: {},
+      outputs: [{ output_type: "stream" }],
+      source: ["x"]
+    }
+    const out = await apply({ cells: [cell], nbformat: 4, nbformat_minor: 5 })
+    expect((out.cells as unknown as [Record<string, unknown>])[0]!.outputs).toEqual([
+      { output_type: "stream" }
+    ])
+  })
+})

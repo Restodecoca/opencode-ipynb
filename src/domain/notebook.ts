@@ -81,21 +81,35 @@ const defineOwn = (
   })
 }
 
+const isSorted = (keys: ReadonlyArray<string>): boolean => {
+  for (let index = 1; index < keys.length; index += 1) {
+    if (keys[index - 1]! >= keys[index]!) return false
+  }
+  return true
+}
+
 const insertSorted = (
   target: Record<string, unknown>,
   key: string,
   value: unknown
 ): void => {
   if (Object.prototype.hasOwnProperty.call(target, key)) return
-  const entries = Object.entries(target)
-  const index = entries.findIndex(([candidate]) => candidate > key)
+  const keys = Object.keys(target)
+  if (keys.length === 0 || !isSorted(keys)) {
+    defineOwn(target, key, value)
+    return
+  }
+  const index = keys.findIndex((candidate) => candidate > key)
   if (index === -1) {
     defineOwn(target, key, value)
     return
   }
-  for (const [existing] of entries) delete target[existing]
-  entries.splice(index, 0, [key, value])
-  for (const [existing, existingValue] of entries) {
+  defineOwn(target, key, value)
+  const inserted = Object.entries(target)
+  for (const [existing] of inserted) delete target[existing]
+  const moved = inserted.splice(inserted.length - 1, 1)[0]!
+  inserted.splice(index, 0, moved)
+  for (const [existing, existingValue] of inserted) {
     defineOwn(target, existing, existingValue)
   }
 }
