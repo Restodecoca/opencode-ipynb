@@ -244,6 +244,68 @@ describe("plugin hook reports swallowed failures", () => {
     }
   })
 
+  it("reports a configured pyright that exists but cannot run", async () => {
+    if (process.platform === "win32") return
+    const dir = makeDir()
+    const file = path.join(dir, "notebook.ipynb")
+    fs.writeFileSync(file, notebookText)
+    const broken = path.join(dir, "broken-pyright")
+    fs.writeFileSync(broken, "not executable", "utf8")
+    fs.chmodSync(broken, 0o644)
+    const { context, hooks } = makeSetup(dir, {
+      lspDiagnostics: true,
+      pyrightPath: broken
+    })
+    await plugin.setup(context as never)
+    const hook = hooks.find((candidate) => candidate.name === "execute.after")
+    const result: CapturedResult = {
+      content: "Edited",
+      metadata: { changed: true, cellType: "code" }
+    }
+    await hook?.callback({
+      tool: "ipynb_edit",
+      status: "completed",
+      input: { filePath: file },
+      result
+    })
+    expect(result.metadata?.notebookWarnings).toEqual([
+      expect.objectContaining({
+        source: "python-probe",
+        detail: expect.stringContaining("broken-pyright")
+      })
+    ])
+  })
+
+  it("stays quiet when the default pyright is simply not installed", async () => {
+    const original = process.env.PATH
+    const dir = makeDir()
+    const file = path.join(dir, "notebook.ipynb")
+    fs.writeFileSync(file, notebookText)
+    process.env.PATH = dir
+    try {
+      const { context, hooks } = makeSetup(dir, {
+        lspDiagnostics: true,
+        pyrightPath: "pyright"
+      })
+      await plugin.setup(context as never)
+      const hook = hooks.find((candidate) => candidate.name === "execute.after")
+      const result: CapturedResult = {
+        content: "Edited",
+        metadata: { changed: true, cellType: "code" }
+      }
+      await hook?.callback({
+        tool: "ipynb_edit",
+        status: "completed",
+        input: { filePath: file },
+        result
+      })
+      expect(result.metadata?.notebookWarnings).toBeUndefined()
+      expect(result.content).toBe("Edited")
+    } finally {
+      process.env.PATH = original
+    }
+  })
+
   it("stays quiet when diagnostics succeed", async () => {
     const dir = makeDir()
     const file = path.join(dir, "notebook.ipynb")

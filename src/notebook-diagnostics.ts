@@ -332,19 +332,37 @@ export const resolvePyrightCommand = (
 const pyrightAvailability = new Map<string, { at: number; ok: boolean }>()
 const PYRIGHT_AVAILABILITY_TTL_MS = 60_000
 
+export interface PyrightAvailabilityOptions {
+  readonly warningSink?: WarningSink | undefined
+}
+
 export const isPyrightAvailable = async (
   configured: string | undefined,
   timeoutMs = 5_000,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: PyrightAvailabilityOptions
 ): Promise<boolean> => {
+  const sink = options?.warningSink
   if (configured !== undefined && path.isAbsolute(configured)) {
     try {
-      if (!fs.statSync(configured).isFile()) return false
+      if (!fs.statSync(configured).isFile()) {
+        sink?.add(
+          warningFrom(
+            "python-probe",
+            new Error("the configured pyright path is not a file"),
+            `pyrightPath=${configured}`
+          )
+        )
+        return false
+      }
       if (process.platform !== "win32") {
         fs.accessSync(configured, fsConstants.X_OK)
       }
       return true
-    } catch {
+    } catch (error) {
+      sink?.add(
+        warningFrom("python-probe", error, `pyrightPath=${configured}`)
+      )
       return false
     }
   }
@@ -354,7 +372,12 @@ export const isPyrightAvailable = async (
     const resolved = resolvePyrightCommand(configured)
     command = resolved.command
     shell = resolved.shell
-  } catch {
+  } catch (error) {
+    if (configured !== undefined && configured !== "pyright") {
+      sink?.add(
+        warningFrom("python-probe", error, `pyrightPath=${configured}`)
+      )
+    }
     return false
   }
   const key = `${command}:${shell ? "shell" : "direct"}`

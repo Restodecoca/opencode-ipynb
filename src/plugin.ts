@@ -216,7 +216,9 @@ const plugin: Plugin.Plugin = {
         if (
           !(await isPyrightAvailable(
             effectiveOptions.pyrightPath,
-            effectiveOptions.diagnosticsTimeoutMs
+            effectiveOptions.diagnosticsTimeoutMs,
+            undefined,
+            { warningSink: sink }
           ))
         ) {
           attachNotebookWarnings(result, sink.drain())
