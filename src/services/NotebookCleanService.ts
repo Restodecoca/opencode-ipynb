@@ -33,6 +33,7 @@ export interface CleanResult {
   readonly removedExecutionCounts: number
   readonly removedWidgets: number
   readonly removedImages: number
+  readonly normalizedSources: number
   readonly notebook: NotebookRaw
 }
 
@@ -131,11 +132,13 @@ const makeCleanImpl = (
             let removedExec = 0
             let removedWidgets = 0
             let removedImages = 0
+            let normalizedSources = 0
 
             const cells = notebook.cells.map((cell) => {
               const normalized = opts.normalizeSource
                 ? normalizeCellSource(cell)
                 : { cell, changed: false }
+              if (normalized.changed) normalizedSources += 1
               if (normalized.cell.cell_type !== "code") {
                 let touched = normalized.changed
                 let nextCell = normalized.cell
@@ -231,6 +234,7 @@ const makeCleanImpl = (
                 removedExecutionCounts: 0,
                 removedWidgets: 0,
                 removedImages: 0,
+                normalizedSources: 0,
                 notebook
               }
             }
@@ -252,6 +256,7 @@ const makeCleanImpl = (
                 removedExecutionCounts: removedExec,
                 removedWidgets,
                 removedImages,
+                normalizedSources,
                 options: opts
               }
             })
@@ -271,6 +276,7 @@ const makeCleanImpl = (
               removedExecutionCounts: removedExec,
               removedWidgets,
               removedImages,
+              normalizedSources,
               notebook: newNotebook
             }
           })

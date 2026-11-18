@@ -53,6 +53,7 @@ export const ipynbCleanTool = tool({
       lines.push(`Removed execution_count: ${result.removedExecutionCounts}`)
       lines.push(`Removed widget state entries: ${result.removedWidgets}`)
       lines.push(`Removed large images: ${result.removedImages}`)
+      lines.push(`Normalized source arrays: ${result.normalizedSources}`)
       return {
         title: `Clean ${input.filePath}`,
         output: lines.join("\n"),
@@ -62,7 +63,8 @@ export const ipynbCleanTool = tool({
           removedOutputs: result.removedOutputs,
           removedExecutionCounts: result.removedExecutionCounts,
           removedWidgets: result.removedWidgets,
-          removedImages: result.removedImages
+          removedImages: result.removedImages,
+          normalizedSources: result.normalizedSources
         }
       }
     } catch (err) {
