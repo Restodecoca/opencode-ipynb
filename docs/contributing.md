@@ -264,8 +264,12 @@ themselves explicitly rather than staying silent:
   uploads every attempt's log, so the next occurrence is captured instead of
   lost. Locally, capture with `bun test 2>&1 | tee run.log`.
 - **Write-path memory.** A one-cell edit in a 17 MB / 64k-cell notebook peaks
-  around 170-220 MB RSS. Array nodes store item spans and only materialize the
-  child nodes for the span that actually differs, which is what brought the
-  patch allocation down from ~240 MB to ~120 MB; `scripts/bench-writes.ts`
-  asserts a 250 MB ceiling, which the previous eager tree exceeded. Retained
-  memory after a forced GC is ~25 MB, so the rest is transient garbage.
+  around 75-172 MB RSS across eight consecutive benchmark runs (369-457 ms).
+  Array nodes store item spans and only materialize the child nodes for the
+  span that actually differs, which is what brought the patch allocation down
+  from ~240 MB to ~120 MB; `scripts/bench-writes.ts` asserts a 350 MB and
+  650 ms ceiling, which the previous eager tree exceeded (251-267 MB,
+  513-531 ms). An object-heavy notebook (one key changed in 64k-key metadata)
+  costs ~2-9 MB (often a negative delta once the GC runs) and is guarded on
+  time only. Retained memory after a forced
+  GC is ~25 MB, so the remainder is transient garbage.
