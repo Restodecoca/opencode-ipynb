@@ -168,6 +168,28 @@ describe("write mode is observable", () => {
 }`)
   })
 
+  it("anchors an added key before the first surviving key that sorts after it", async () => {
+    const { patchJsonTextDetailed } = await import("../../src/utils/json-patch.js")
+    const style = {
+      unit: " ",
+      newline: "\n" as const,
+      itemSeparator: ", ",
+      keySeparator: ": ",
+      ensureAscii: false
+    }
+    const previous = `{
+ "z": 1,
+ "a": 2
+}`
+    const result = patchJsonTextDetailed(previous, { z: 1, a: 2, c: 3 }, { style })
+    expect(result.reason).toBeUndefined()
+    expect(result.text).toBe(`{
+ "c": 3,
+ "z": 1,
+ "a": 2
+}`)
+  })
+
   it("keeps an added container value inline when its object is inline", async () => {
     const { patchJsonTextDetailed } = await import("../../src/utils/json-patch.js")
     const style = {
