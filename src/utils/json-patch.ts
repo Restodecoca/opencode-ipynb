@@ -66,6 +66,11 @@ export const MAX_JSON_DEPTH = 512
 
 class DepthExceededError extends RangeError {}
 
+const decodeString = (text: string, start: number, end: number): string => {
+  const raw = text.slice(start, end)
+  return raw.indexOf("\\") === -1 ? raw.slice(1, -1) : (JSON.parse(raw) as string)
+}
+
 const parseNode = (text: string, from: number, depth = 0): JsonNode => {
   if (depth > MAX_JSON_DEPTH) {
     throw new DepthExceededError(
@@ -76,7 +81,7 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
   const char = text[start]
   if (char === '"') {
     const end = parseStringSpan(text, start)
-    return { kind: "literal", start, end, value: JSON.parse(text.slice(start, end)) }
+    return { kind: "literal", start, end, value: decodeString(text, start, end) }
   }
   if (char === "{") {
     const entries: ObjectEntry[] = []
@@ -87,7 +92,7 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
     for (;;) {
       const keyStart = skipWhitespace(text, pos)
       const keyEnd = parseStringSpan(text, keyStart)
-      const key = JSON.parse(text.slice(keyStart, keyEnd)) as string
+      const key = decodeString(text, keyStart, keyEnd)
       pos = skipWhitespace(text, keyEnd)
       pos = skipWhitespace(text, pos + 1)
       const value = parseNode(text, pos, depth + 1)
@@ -148,7 +153,7 @@ const parseNode = (text: string, from: number, depth = 0): JsonNode => {
       kind: "literal",
       start,
       end: start + match[0].length,
-      value: JSON.parse(match[0])
+      value: Number(match[0])
     }
   }
   throw new SyntaxError(`unexpected token at ${start}`)
@@ -376,16 +381,22 @@ const patchArray = (
     ? `,${layout.style.newline}${childIndent}`
     : layout.style.itemSeparator
 
-  const rawByKey = new Map<string, string>()
-  for (let index = 0; index < node.items.length; index += 1) {
-    const source = node.items[index]!
-    rawByKey.set(
-      canonicalJson(oldItems[index]),
-      layout.text.slice(source.start, source.end)
-    )
+  let rawByKey: Map<string, string> | undefined
+  const rawIndex = (): Map<string, string> => {
+    if (rawByKey === undefined) {
+      rawByKey = new Map()
+      for (let index = 0; index < node.items.length; index += 1) {
+        const source = node.items[index]!
+        rawByKey.set(
+          canonicalJson(oldItems[index]),
+          layout.text.slice(source.start, source.end)
+        )
+      }
+    }
+    return rawByKey
   }
   const rawFor = (item: unknown): string | undefined => {
-    const raw = rawByKey.get(canonicalJson(item))
+    const raw = rawIndex().get(canonicalJson(item))
     if (raw === undefined) return undefined
     return raw.includes("\n") && !fileMultiline ? undefined : raw
   }

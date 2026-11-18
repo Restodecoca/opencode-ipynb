@@ -269,6 +269,48 @@ const measureUnicodeEscape = (): { ms: number; rssDeltaMb: number } => {
   }
 }
 
+const measureLargeNotebookEdit = async (): Promise<{
+  ms: number
+  rssDeltaMb: number
+  mb: number
+}> => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-bench-large-"))
+  try {
+    const cells = Array.from({ length: 64_000 }, (_, index) => ({
+      cell_type: "code",
+      execution_count: index,
+      metadata: {},
+      outputs: [{ output_type: "stream", name: "stdout", text: ["line\n".repeat(20)] }],
+      source: ["print(1)"]
+    }))
+    const file = path.join(dir, "large.ipynb")
+    const body = JSON.stringify({ cells, metadata: {}, nbformat: 4, nbformat_minor: 5 })
+    fs.writeFileSync(file, body)
+    const pathSvc = makePathService({
+      directory: dir,
+      worktree: dir,
+      platform: process.platform
+    })
+    const edit = makeEditImpl(
+      pathSvc,
+      makeNotebookFileService(),
+      makePermissionService(makeContext(dir))
+    )
+    const before = process.memoryUsage().rss
+    const started = Bun.nanoseconds()
+    await Effect.runPromise(
+      edit.editCell(file, { cellIndex: 5, source: "print(2)", clearOutputs: "always" })
+    )
+    return {
+      ms: (Bun.nanoseconds() - started) / 1e6,
+      rssDeltaMb: (process.memoryUsage().rss - before) / 1e6,
+      mb: body.length / 1e6
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 const main = async (): Promise<void> => {
   await measure(SMALL)
   const small = await measure(SMALL)
@@ -315,7 +357,13 @@ const main = async (): Promise<void> => {
   console.log(
     `unicode escape 4MB ensureAscii: ${unicodeEscape.ms.toFixed(1)}ms, rss +${unicodeEscape.rssDeltaMb.toFixed(0)}MB`
   )
+  const largeEdit = await measureLargeNotebookEdit()
+  console.log(
+    `one-cell edit in a ${largeEdit.mb.toFixed(1)}MB / 64k-cell notebook: ${largeEdit.ms.toFixed(0)}ms, rss +${largeEdit.rssDeltaMb.toFixed(0)}MB`
+  )
   const failures: string[] = []
+  if (largeEdit.ms > 750) failures.push(`largeEditTime ${largeEdit.ms.toFixed(0)}ms`)
+  if (largeEdit.rssDeltaMb > 600) failures.push(`largeEditRss ${largeEdit.rssDeltaMb.toFixed(0)}MB`)
   if (unicodeEscape.ms > 400) failures.push(`unicodeEscapeTime ${unicodeEscape.ms.toFixed(1)}ms`)
   if (unicodeEscape.rssDeltaMb > 200) failures.push(`unicodeEscapeRss ${unicodeEscape.rssDeltaMb.toFixed(0)}MB`)
   if (largeOutput.ms > 200) failures.push(`largeOutputTime ${largeOutput.ms.toFixed(1)}ms`)
