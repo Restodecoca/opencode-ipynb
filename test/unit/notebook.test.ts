@@ -856,3 +856,27 @@ describe("revision re-read failure refuses the write", () => {
     }
   })
 })
+
+describe("cells without execution_count", () => {
+  it("accepts and byte-stably rewrites a notebook nbformat.read accepts", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-noexec-"))
+    const file = path.join(dir, "n.ipynb")
+    const body = `{\n "cells": [\n  {"cell_type": "code", "metadata": {}, "outputs": [], "source": ["x = 1"]}\n ],\n "metadata": {},\n "nbformat": 4,\n "nbformat_minor": 5\n}\n`
+    fs.writeFileSync(file, body)
+    const svc = makeNotebookFileService({ worktree: dir })
+    try {
+      const read = await Effect.runPromise(svc.readWithText(file))
+      expect(read.notebook.cells).toHaveLength(1)
+      const exit = await Effect.runPromiseExit(
+        svc.writeAtomic(file, read.notebook as never, {
+          format: read.format,
+          previousText: read.text
+        })
+      )
+      expect(exit._tag).toBe("Success")
+      expect(fs.readFileSync(file, "utf8")).toBe(body)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

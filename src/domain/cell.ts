@@ -11,7 +11,7 @@ export const CodeCellSchema = z
     cell_type: z.literal("code"),
     id: z.string().optional(),
     metadata: CellMetadataSchema,
-    execution_count: z.union([z.number().int().nullable(), z.null()]),
+    execution_count: z.union([z.number().int(), z.null()]).default(null),
     source: SourceSchema,
     outputs: z.array(z.record(z.string(), z.unknown())).default([])
   })
