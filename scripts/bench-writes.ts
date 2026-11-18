@@ -356,6 +356,44 @@ const measurePatchAllocation = (): { ok: boolean; line: string } => {
   return { ok: (result.exitCode ?? 1) === 0, line: output.split("\n").slice(-2).join(" | ") }
 }
 
+const measureCompactPatchScaling = (): { ms: number; ratio: number } => {
+  const { patchJsonTextDetailed } = require("../src/utils/json-patch.js") as {
+    patchJsonTextDetailed: (
+      text: string,
+      next: unknown,
+      options: { style: Record<string, unknown> }
+    ) => { text?: string; reason?: string }
+  }
+  const style = {
+    unit: " ",
+    newline: "\n",
+    itemSeparator: ", ",
+    keySeparator: ": ",
+    ensureAscii: false
+  }
+  const run = (keys: number): number => {
+    const metadata: Record<string, number> = {}
+    for (let index = 0; index < keys; index += 1) {
+      metadata[`k${String(index).padStart(7, "0")}`] = index
+    }
+    const text = JSON.stringify({
+      cells: [],
+      metadata,
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+    const next = JSON.parse(text) as { metadata: Record<string, number> }
+    for (const key of Object.keys(next.metadata)) next.metadata[key] = -1
+    const started = Bun.nanoseconds()
+    patchJsonTextDetailed(text, next, { style })
+    return (Bun.nanoseconds() - started) / 1e6
+  }
+  run(4_000)
+  const small = run(16_000)
+  const large = run(64_000)
+  return { ms: large, ratio: large / Math.max(small, 0.5) }
+}
+
 const main = async (): Promise<void> => {
   await measure(SMALL)
   const small = await measure(SMALL)
@@ -402,6 +440,10 @@ const main = async (): Promise<void> => {
   console.log(
     `unicode escape 4MB ensureAscii: ${unicodeEscape.ms.toFixed(1)}ms, rss +${unicodeEscape.rssDeltaMb.toFixed(0)}MB`
   )
+  const compactScaling = measureCompactPatchScaling()
+  console.log(
+    `compact notebook patch 16k->64k keys: ${compactScaling.ms.toFixed(0)}ms (${compactScaling.ratio.toFixed(1)}x for 4x input)`
+  )
   const patchAllocation = measurePatchAllocation()
   console.log(`patch allocation guard: ${patchAllocation.line}`)
   const objectHeavy = measureObjectHeavyPatch()
@@ -413,6 +455,8 @@ const main = async (): Promise<void> => {
     `one-cell edit in a ${largeEdit.mb.toFixed(1)}MB / 64k-cell notebook: ${largeEdit.ms.toFixed(0)}ms, rss +${largeEdit.rssDeltaMb.toFixed(0)}MB`
   )
   const failures: string[] = []
+  if (compactScaling.ratio > 12) failures.push(`compactPatchRatio ${compactScaling.ratio.toFixed(1)}x`)
+  if (compactScaling.ms > 3_000) failures.push(`compactPatchTime ${compactScaling.ms.toFixed(0)}ms`)
   if (!patchAllocation.ok) failures.push("patchAllocation (see bench-alloc.ts)")
   // These are absolute budgets, not a discriminator between implementations:
   // 18 lazy runs measured 421-585 ms / 91-231 MB and 5 eager runs 464-663 ms /

@@ -21,7 +21,9 @@ const stripOscSequences = (text: string): string => {
     const limit = Math.min(text.length - 1, bodyStart + OSC_MAX_BODY)
     const end = terminatorEnd(text, bodyStart, limit)
     if (end < 0) {
-      start = text.indexOf("\u001b]", start + 1)
+      // No terminator inside the window: skip the whole examined body so the
+      // next introducer search starts past it instead of one char later.
+      start = text.indexOf("\u001b]", limit + 1)
       continue
     }
     result += text.slice(cursor, start)

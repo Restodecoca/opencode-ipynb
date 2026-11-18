@@ -44,6 +44,48 @@ const imageNotice = (mime: string, value: string): string => {
 const boundedForSanitize = (text: string, max: number): string =>
   text.length <= max * 2 + 256 ? text : text.slice(0, max * 2 + 256)
 
+const boundJsonValue = (
+  value: unknown,
+  budget: number,
+  depth = 0
+): unknown => {
+  if (budget <= 0 || depth > 8) return "…"
+  if (typeof value === "string") {
+    return value.length <= budget ? value : `${value.slice(0, budget)}…`
+  }
+  if (Array.isArray(value)) {
+    const out: unknown[] = []
+    let left = budget
+    for (const item of value) {
+      if (left <= 0) {
+        out.push(`… (${value.length - out.length} more items)`)
+        break
+      }
+      const bounded = boundJsonValue(item, Math.max(1, left), depth + 1)
+      out.push(bounded)
+      left -= JSON.stringify(bounded).length
+    }
+    return out
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>
+    const keys = Object.keys(record)
+    const out: Record<string, unknown> = {}
+    let left = budget
+    for (const key of keys) {
+      if (left <= 0) {
+        out["…"] = `${keys.length - Object.keys(out).length} more keys`
+        break
+      }
+      const bounded = boundJsonValue(record[key], Math.max(1, left), depth + 1)
+      out[key] = bounded
+      left -= JSON.stringify(bounded).length + key.length
+    }
+    return out
+  }
+  return value
+}
+
 const formatStream = (text: string, max: number): string => {
   const t = truncate(sanitizeTerminal(boundedForSanitize(text, max)), max, {
     key: "stream",
@@ -99,7 +141,13 @@ const formatDisplay = (
       lines.push(t.text)
       lines.push(fence)
     } else {
-      const t = truncate(JSON.stringify(value, null, 2), opts.maxOutputChars, { key: "json", paramName: "maxOutputChars" })
+      // Serializing a huge object only to slice it is quadratic work for a
+      // capped result: bound the structure first, then pretty-print it.
+      const t = truncate(
+        JSON.stringify(boundJsonValue(value, Math.max(1, opts.maxOutputChars * 2)), null, 2),
+        opts.maxOutputChars,
+        { key: "json", paramName: "maxOutputChars" }
+      )
       const fence = codeFence(t.text)
       lines.push(`- ${sanitizeInline(mime)}:`)
       lines.push(`${fence}json`)
@@ -155,7 +203,13 @@ const formatDisplayWithAttachments = async (
       lines.push(t.text)
       lines.push(fence)
     } else {
-      const t = truncate(JSON.stringify(value, null, 2), opts.maxOutputChars, { key: "json", paramName: "maxOutputChars" })
+      // Serializing a huge object only to slice it is quadratic work for a
+      // capped result: bound the structure first, then pretty-print it.
+      const t = truncate(
+        JSON.stringify(boundJsonValue(value, Math.max(1, opts.maxOutputChars * 2)), null, 2),
+        opts.maxOutputChars,
+        { key: "json", paramName: "maxOutputChars" }
+      )
       const fence = codeFence(t.text)
       lines.push(`- ${sanitizeInline(mime)}:`)
       lines.push(`${fence}json`)

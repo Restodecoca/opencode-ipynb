@@ -307,10 +307,15 @@ const indentAt = (text: string, pos: number): string => {
   return /^[ \t]*$/.test(prefix) ? prefix : ""
 }
 
-const isMultiline = (text: string, node: JsonNode): boolean => {
-  const at = text.indexOf("\n", node.start)
-  return at !== -1 && at < node.end
+const newlineWithin = (text: string, from: number, to: number): boolean => {
+  for (let index = from; index < to; index += 1) {
+    if (text.charCodeAt(index) === 10) return true
+  }
+  return false
 }
+
+const isMultiline = (text: string, node: JsonNode): boolean =>
+  newlineWithin(text, node.start, node.end)
 
 interface Layout {
   readonly text: string
