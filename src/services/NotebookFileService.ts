@@ -576,6 +576,30 @@ const buildFileService = (
                 ]
               })
             }
+            if (
+              tempStat !== undefined &&
+              finalStat !== undefined &&
+              tempStat.ino === finalStat.ino
+            ) {
+              const landed = await fsp.readFile(target, "utf8").catch((error: unknown) => {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+                  warningSink?.add(
+                    warningFrom("revision-check", error, `reading ${target} after the write`)
+                  )
+                }
+                return undefined
+              })
+              if (landed !== undefined && landed !== serialized) {
+                throw new NotebookValidationError({
+                  message:
+                    "another process rewrote the notebook right after the write",
+                  filePath,
+                  issues: [
+                    "the notebook was written concurrently; re-read it and retry the edit"
+                  ]
+                })
+              }
+            }
             if (previousText !== undefined && rewrite.mode !== "patched") {
               warningSink?.add(
                 warningFrom(
