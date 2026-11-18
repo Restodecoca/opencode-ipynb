@@ -470,7 +470,15 @@ const patchObject = (
       lastIndex += 1
     }
     if (index === 0 && lastIndex === node.entries.length - 1) {
-      edits.push({ start: node.start, end: node.end, text: "{}" })
+      if (Object.keys(value).length === 0) {
+        edits.push({ start: node.start, end: node.end, text: "{}" })
+        return
+      }
+      edits.push({
+        start: node.start,
+        end: node.end,
+        text: formatValue(value, indent, multiline || layout.text.includes("\n"), layout)
+      })
       return
     }
     const next = node.entries[lastIndex + 1]

@@ -93,4 +93,61 @@ describe("write mode is observable", () => {
     expect(result.text).toBeUndefined()
     expect(result.reason).toBe("parse-failed")
   })
+
+  it("patches an inline object whose every key is replaced", async () => {
+    const { patchJsonTextDetailed } = await import("../../src/utils/json-patch.js")
+    const style = {
+      unit: " ",
+      newline: "\n" as const,
+      itemSeparator: ",",
+      keySeparator: ": ",
+      ensureAscii: false
+    }
+    const result = patchJsonTextDetailed('{"x": 1}', { y: 2 }, { style })
+    expect(result.reason).toBeUndefined()
+    expect(result.text).toBe('{"y": 2}')
+  })
+
+  it("patches a multiline object whose every key is replaced", async () => {
+    const { patchJsonTextDetailed } = await import("../../src/utils/json-patch.js")
+    const style = {
+      unit: " ",
+      newline: "\n" as const,
+      itemSeparator: ",",
+      keySeparator: ": ",
+      ensureAscii: false
+    }
+    const result = patchJsonTextDetailed('{\n "x": 1\n}', { y: 2 }, { style })
+    expect(result.reason).toBeUndefined()
+    expect(result.text).toBe('{\n "y": 2\n}')
+  })
+
+  it("keeps sibling bytes when a nested object replaces every key", async () => {
+    const { patchJsonTextDetailed } = await import("../../src/utils/json-patch.js")
+    const style = {
+      unit: " ",
+      newline: "\n" as const,
+      itemSeparator: ",",
+      keySeparator: ": ",
+      ensureAscii: false
+    }
+    const previous = `{
+ "a": "untouched",
+ "metadata": {
+  "x": 1
+ }
+}`
+    const result = patchJsonTextDetailed(
+      previous,
+      { a: "untouched", metadata: { y: 2 } },
+      { style }
+    )
+    expect(result.reason).toBeUndefined()
+    expect(result.text).toBe(`{
+ "a": "untouched",
+ "metadata": {
+  "y": 2
+ }
+}`)
+  })
 })
