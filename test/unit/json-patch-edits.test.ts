@@ -47,6 +47,15 @@ describe("applyEdits", () => {
     ).toBeUndefined()
   })
 
+  it("breaks equal starts by end, letting a shorter edit that ends first apply", () => {
+    expect(
+      applyEdits("0123456789", [
+        { start: 5, end: 10, text: "A" },
+        { start: 5, end: 5, text: "B" }
+      ])
+    ).toBe("01234BA")
+  })
+
   it("returns the text untouched for an empty edit list", () => {
     expect(applyEdits("abc", [])).toBe("abc")
   })

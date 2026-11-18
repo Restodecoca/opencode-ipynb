@@ -39,7 +39,8 @@ theorem applyEdits_single (text : List Char) (edit : Edit) :
   simp
 
 theorem applyEdits_overlap_rejected (text : List Char) (e1 e2 : Edit)
-    (_hsorted : e1.start ≤ e2.start) (hoverlap : e2.start < e1.stop) :
+    (_hsorted : e1.start < e2.start ∨ (e1.start = e2.start ∧ e1.stop ≤ e2.stop))
+    (hoverlap : e2.start < e1.stop) :
     applyEdits text [e1, e2] = none := by
   simp only [applyEdits, applyEditsFrom]
   rw [ite_eq_right (by omega : ¬ (e1.start < 0))]
