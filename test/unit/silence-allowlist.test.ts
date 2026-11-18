@@ -32,7 +32,7 @@ describe("silent failure allowlist", () => {
     const remaining = new Map(allowlist)
     const offenders: string[] = []
     for (const file of listFiles(srcRoot)) {
-      const rel = path.relative(srcRoot, file)
+      const rel = path.relative(srcRoot, file).split(path.sep).join("/")
       const content = fs.readFileSync(file, "utf8")
       for (const match of content.matchAll(silentCatch)) {
         const key = `${rel}|${normalize(match[0])}`

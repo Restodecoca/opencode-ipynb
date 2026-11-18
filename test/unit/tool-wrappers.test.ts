@@ -245,6 +245,10 @@ describe("tool wrappers > happy paths", () => {
 
 describe("tool wrappers > error paths", () => {
   const missing = "/tmp/opencode/definitely-missing-notebook.ipynb"
+  const outside =
+    process.platform === "win32"
+      ? path.join(process.env.SystemRoot ?? "C:\\Windows", "ipynb-tool-wrapper-outside.ipynb")
+      : "/etc/ipynb-tool-wrapper-outside.ipynb"
 
   const cases: ReadonlyArray<{
     name: string
@@ -322,7 +326,7 @@ describe("tool wrappers > error paths", () => {
       run: (ctx) =>
         execute(
           ipynbKernelTool,
-          { action: "restart", filePath: "/etc/ipynb-tool-wrapper-outside.ipynb" },
+          { action: "restart", filePath: outside },
           {
             ...ctx,
             pluginOptions: {

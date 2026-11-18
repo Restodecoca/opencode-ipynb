@@ -146,7 +146,9 @@ describe("resolvePythonPath", () => {
   })
 
   const realPython = fs.realpathSync(process.execPath)
-  const otherReal = fs.realpathSync("/bin/sh")
+  const otherReal = fs.realpathSync(
+    process.platform === "win32" ? (process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe") : "/bin/sh"
+  )
 
   it("lets OPENCODE_IPYNB_PYTHON win over the plugin option", () => {
     process.env.OPENCODE_IPYNB_PYTHON = realPython

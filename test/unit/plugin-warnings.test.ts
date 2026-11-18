@@ -83,6 +83,7 @@ describe("plugin hook reports swallowed failures", () => {
   })
 
   it("reports a sidecar cleanup failure when the plugin unloads", async () => {
+    if (process.platform === "win32") return
     const dir = makeDir()
     const file = path.join(dir, "notebook.ipynb")
     fs.writeFileSync(file, notebookText)

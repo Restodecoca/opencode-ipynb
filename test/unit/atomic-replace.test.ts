@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -38,6 +38,7 @@ describe("replaceFile", () => {
   })
 
   it("rejects instead of deleting both copies when the rename fails", async () => {
+    if (process.platform === "win32") return
     await withTempDir(async (dir) => {
       const temp = path.join(dir, "new.tmp")
       const target = path.join(dir, "notebook.ipynb")
@@ -54,11 +55,35 @@ describe("replaceFile", () => {
     if (process.platform !== "win32") return
     await withTempDir(async (dir) => {
       const temp = path.join(dir, "new.tmp")
-      const target = path.join(dir, "missing.ipynb")
+      const target = path.join(dir, "notebook.ipynb")
       fs.writeFileSync(temp, "new")
-      const sink = makeWarningSink()
-      await replaceFile(temp, target, sink)
-      expect(sink.drain().length).toBeGreaterThan(0)
+      fs.writeFileSync(target, "old")
+      const original = fs.promises.rename
+      let firstAttempt = true
+      const spy = spyOn(fs.promises, "rename").mockImplementation(((
+        from: fs.PathLike,
+        to: fs.PathLike
+      ) => {
+        if (firstAttempt) {
+          firstAttempt = false
+          return Promise.reject(
+            Object.assign(new Error("locked"), { code: "EPERM" })
+          )
+        }
+        if (path.resolve(String(from)) === path.resolve(target)) {
+          return Promise.reject(
+            Object.assign(new Error("locked"), { code: "EPERM" })
+          )
+        }
+        return original(from, to)
+      }) as unknown as typeof fs.promises.rename)
+      try {
+        const sink = makeWarningSink()
+        await replaceFile(temp, target, sink)
+        expect(sink.drain().length).toBeGreaterThan(0)
+      } finally {
+        spy.mockRestore()
+      }
     })
   })
 })

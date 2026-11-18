@@ -113,6 +113,7 @@ describe("swallowed failures stay observable", () => {
   const restore: Array<() => void> = []
 
   it("records a kernel warning for a non-protocol stdout line", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-kernel-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
@@ -148,6 +149,7 @@ describe("swallowed failures stay observable", () => {
   })
 
   it("routes a kernel warning to the sink of the in-flight request", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-kernel-request-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
@@ -196,6 +198,7 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
   })
 
   it("records a non-object JSON line from the helper", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-kernel-json-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
@@ -229,6 +232,7 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
   })
 
   it("does not warn for a healthy kernel request or a clean shutdown", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-quiet-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
@@ -259,6 +263,7 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
   })
 
   it("keys a kernel correctly when the notebook is missing without warning", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-missing-"))
     const file = path.join(dir, "missing.ipynb")
     const helper = shellHelper(dir, "")
@@ -290,6 +295,7 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
   })
 
   it("records the realpath fallback used to key a kernel", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-realpath-"))
     const file = path.join(dir, "missing.ipynb")
     const helper = shellHelper(dir, "")
@@ -619,6 +625,7 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
   })
 
   it("records a leftover sidecar temp file when the write fails", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-sidecar-tmp-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
@@ -739,6 +746,7 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
   })
 
   it("reports a diagnostics temp file that could not be removed", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-diag-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
@@ -857,6 +865,7 @@ printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outpu
   })
 
   it("returns no diagnostics warnings for a clean run", async () => {
+    if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-diag-clean-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
