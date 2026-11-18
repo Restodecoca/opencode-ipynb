@@ -5,6 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { NotebookValidationError } from "../../src/domain/errors.js"
 import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
+import { setAfterRenameHook } from "../../src/utils/rename-hook.js"
 
 const notebook = (source: string): string =>
   `${JSON.stringify(
@@ -19,6 +20,44 @@ const notebook = (source: string): string =>
   )}\n`
 
 describe("concurrent replacement detection", () => {
+  it("reports the loss when another process deletes the notebook after our rename", async () => {
+    if (process.platform === "win32") return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-deleted-"))
+    const file = path.join(dir, "n.ipynb")
+    const before = notebook("# A")
+    fs.writeFileSync(file, before)
+    const format = {
+      unit: " ",
+      newline: "\n" as const,
+      itemSeparator: ", ",
+      keySeparator: ": ",
+      ensureAscii: false,
+      trailingNewline: true
+    }
+    setAfterRenameHook(() => {
+      fs.rmSync(file, { force: true })
+    })
+    try {
+      const svc = makeNotebookFileService({ worktree: dir })
+      const exit = await Effect.runPromiseExit(
+        svc.writeAtomic(file, JSON.parse(notebook("# OURS")) as never, {
+          format,
+          previousText: before
+        })
+      )
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Cause.findErrorOption(exit.cause)
+        const value = error._tag === "Some" ? error.value : undefined
+        expect((value as { message?: string }).message ?? "").toContain("disappeared")
+      }
+      expect(fs.existsSync(file)).toBe(false)
+    } finally {
+      setAfterRenameHook(undefined)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("reports a lost write when another writer rewrites the file in place", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-inplace-"))
     const file = path.join(dir, "n.ipynb")

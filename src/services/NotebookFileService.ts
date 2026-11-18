@@ -32,7 +32,7 @@ import {
 } from "../utils/json.js"
 import { MAX_NOTEBOOK_BYTES } from "../utils/limits.js"
 import { replaceFile } from "../utils/atomic-replace.js"
-import { beforeRenameHook } from "../utils/rename-hook.js"
+import { afterRenameHook, beforeRenameHook } from "../utils/rename-hook.js"
 
 export interface NotebookFileServiceOptions {
   readonly worktree?: string
@@ -629,6 +629,7 @@ const buildFileService = (
             } else {
               await replaceFile(tmp, target, warningSink)
             }
+            await afterRenameHook(freshTarget)
             const finalStat = await fsp.stat(freshTarget).catch((error: unknown) => {
               if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
                 warningSink?.add(
@@ -657,9 +658,17 @@ const buildFileService = (
                 ]
               })
             }
+            if (finalStat === undefined) {
+              throw new NotebookValidationError({
+                message: "the notebook disappeared right after the write",
+                filePath,
+                issues: [
+                  "another process removed the file; re-create it and retry the edit"
+                ]
+              })
+            }
             if (
               tempStat !== undefined &&
-              finalStat !== undefined &&
               tempStat.ino === finalStat.ino
             ) {
               const landed = await fsp.readFile(freshTarget, "utf8").catch((error: unknown) => {
