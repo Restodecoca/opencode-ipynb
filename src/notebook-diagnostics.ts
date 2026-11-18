@@ -376,6 +376,24 @@ export const resolvePyrightCommand = (
 
 const pyrightAvailability = new Map<string, { at: number; ok: boolean }>()
 const PYRIGHT_AVAILABILITY_TTL_MS = 60_000
+const PYRIGHT_AVAILABILITY_MAX = 32
+
+const rememberPyrightAvailability = (key: string, ok: boolean): void => {
+  pyrightAvailability.set(key, { at: Date.now(), ok })
+  // The TTL only makes an entry stale; without a size bound a long-lived host
+  // that sees many pyright paths keeps one entry per path forever.
+  if (pyrightAvailability.size > PYRIGHT_AVAILABILITY_MAX) {
+    let oldestKey: string | undefined
+    let oldestAt = Number.POSITIVE_INFINITY
+    for (const [candidate, entry] of pyrightAvailability) {
+      if (entry.at < oldestAt) {
+        oldestAt = entry.at
+        oldestKey = candidate
+      }
+    }
+    if (oldestKey !== undefined) pyrightAvailability.delete(oldestKey)
+  }
+}
 
 export interface PyrightAvailabilityOptions {
   readonly warningSink?: WarningSink | undefined
@@ -449,7 +467,7 @@ export const isPyrightAvailable = async (
       sink?.add(warningFrom("python-probe", error, "checking pyright availability"))
     }
   }
-  if (cacheable) pyrightAvailability.set(key, { at: Date.now(), ok })
+  if (cacheable) rememberPyrightAvailability(key, ok)
   return ok
 }
 

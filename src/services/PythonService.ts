@@ -733,6 +733,19 @@ const makePythonImpl = (
       }
       const results = await Promise.all(REQUIRED_DEPS.map((m) => checkImport(pythonPath, m)))
       depsCache.set(pythonPath, { checkedAt: Date.now(), results })
+      // TTL only marks an entry stale; bound the map so a host that probes many
+      // interpreters does not keep one entry per path forever.
+      if (depsCache.size > 32) {
+        let oldest: string | undefined
+        let oldestAt = Number.POSITIVE_INFINITY
+        for (const [candidate, entry] of depsCache) {
+          if (entry.checkedAt < oldestAt) {
+            oldestAt = entry.checkedAt
+            oldest = candidate
+          }
+        }
+        if (oldest !== undefined) depsCache.delete(oldest)
+      }
       return results
     })
 

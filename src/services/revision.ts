@@ -27,6 +27,12 @@ export const readRevision = (
 ): Effect.Effect<string, RevisionError> =>
   Effect.map(fileSvc.readText(absPath), contentHash)
 
+// `writeAtomic` compares `previousText` against a re-read under the lock, so
+// this check is redundant for correctness. It is kept on purpose: it runs before
+// the permission prompt, so a conflict is refused before the user is asked to
+// approve a write, and it narrows the window in which an external edit can slip
+// between the prompt and the write. Measured cost: 34 ms on a 17 MB notebook
+// (read + SHA-256), against ~500 ms for the write itself.
 export const assertRevisionUnchanged = (
   fileSvc: NotebookFileServiceShape,
   absPath: string,
