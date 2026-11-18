@@ -12,6 +12,7 @@ import {
 } from "../domain/errors.js"
 import { NotebookSchema, applyNotebookDefaults, type NotebookRaw } from "../domain/notebook.js"
 import type { PatchFailureReason, WriteMode } from "../utils/json.js"
+import { absoluteDriveRoot } from "../utils/paths.js"
 import { type WarningSink, warningFrom } from "../utils/warnings.js"
 
 export type { WriteMode }
@@ -78,7 +79,10 @@ const probeStat = async (
 }
 
 const inside = (root: string, target: string): boolean => {
-  const relative = path.relative(root, target)
+  const relative = path.relative(
+    absoluteDriveRoot(root),
+    absoluteDriveRoot(target)
+  )
   return (
     relative === "" ||
     (relative !== ".." &&

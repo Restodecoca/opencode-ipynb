@@ -15,6 +15,7 @@ import {
   isAbsolutePath,
   makeRelative,
   normalizeSlashes,
+  absoluteDriveRoot,
   resolveAgainstBase,
   toForwardSlashes
 } from "../utils/paths.js"
@@ -56,7 +57,7 @@ const pathNorm = (p: string, platform: NodeJS.Platform): string => {
   if (!p) {
     return p
   }
-  const resolved = path.resolve(p)
+  const resolved = path.resolve(absoluteDriveRoot(p, platform))
   return platform === "win32" ? normalizeSlashes(resolved, platform) : resolved
 }
 
@@ -84,11 +85,12 @@ const buildPathService = (options: PathServiceOptions): PathServiceShape => {
   }
 
   const inside = (base: string, abs: string): boolean => {
+    const baseNorm = pathNorm(base, env.platform)
     const norm = pathNorm(abs, env.platform)
-    if (norm === base) {
+    if (norm === baseNorm) {
       return true
     }
-    const rel = path.relative(base, norm)
+    const rel = path.relative(baseNorm, norm)
     if (!rel) {
       return true
     }

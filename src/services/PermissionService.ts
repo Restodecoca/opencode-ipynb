@@ -3,10 +3,14 @@ import { promises as fsp } from "node:fs"
 import * as path from "node:path"
 import type { ToolContext } from "../tool.js"
 import { PermissionDeniedError } from "../domain/errors.js"
+import { absoluteDriveRoot } from "../utils/paths.js"
 import { type WarningSink, warningFrom } from "../utils/warnings.js"
 
 const inside = (root: string, target: string): boolean => {
-  const relative = path.relative(root, target)
+  const relative = path.relative(
+    absoluteDriveRoot(root),
+    absoluteDriveRoot(target)
+  )
   return (
     relative === "" ||
     (relative !== ".." &&

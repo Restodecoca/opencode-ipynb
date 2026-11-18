@@ -5,6 +5,7 @@ import { replaceFile } from "./utils/atomic-replace.js"
 import * as path from "node:path"
 import type { NotebookVirtualDocument } from "./lsp.js"
 import { sanitizeNotebookText } from "./notebook-diagnostics.js"
+import { absoluteDriveRoot } from "./utils/paths.js"
 import {
   type Warning,
   type WarningSink,
@@ -45,7 +46,10 @@ const LEGACY_FILE = /\.[0-9a-f]{16}\.py$/
 const MAX_AGE_MS = 60 * 60 * 1000
 
 const inside = (root: string, target: string): boolean => {
-  const relative = path.relative(root, target)
+  const relative = path.relative(
+    absoluteDriveRoot(root),
+    absoluteDriveRoot(target)
+  )
   return (
     relative === "" ||
     (relative !== ".." &&

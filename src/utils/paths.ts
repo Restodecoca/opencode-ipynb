@@ -16,6 +16,12 @@ export const normalizeSlashes = (p: string, platform: NodeJS.Platform = process.
   return p.replace(/\\/g, "/")
 }
 
+export const absoluteDriveRoot = (
+  value: string,
+  platform: NodeJS.Platform = process.platform
+): string =>
+  platform === "win32" && /^[A-Za-z]:$/.test(value) ? `${value}\\` : value
+
 export const isAbsolutePath = (p: string): boolean => {
   if (!p) {
     return false
