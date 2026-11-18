@@ -413,9 +413,10 @@ const buildFileService = (
       ) {
         return rewrite
       }
-      return yield* Effect.tryPromise({
-        try: async () => {
-          const dir = path.dirname(filePath)
+      return yield* Effect.uninterruptible(
+        Effect.tryPromise({
+          try: async () => {
+            const dir = path.dirname(filePath)
           const root =
             worktree === undefined
               ? undefined
@@ -586,7 +587,8 @@ const buildFileService = (
                   message: err instanceof Error ? err.message : String(err),
                   filePath
                 })
-      })
+        })
+      )
     })
 
   return {

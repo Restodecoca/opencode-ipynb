@@ -772,6 +772,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               clearTimeout(timer)
               state.pending.delete(id)
               cleanupAbort?.()
+              cleanupStdinError?.()
               stopKernelInBackground(kernelPath)
               reject(
                 new PythonRunnerError({
@@ -803,6 +804,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
               }
               const onStdinError = (): void => {
                 cleanupStdinError?.()
+                cleanupAbort?.()
                 state.pending.delete(id)
                 clearTimeout(timer)
                 reject(
