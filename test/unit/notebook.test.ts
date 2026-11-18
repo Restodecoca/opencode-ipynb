@@ -807,3 +807,52 @@ describe("write refusal on unreadable targets", () => {
     }
   })
 })
+
+describe("revision re-read failure refuses the write", () => {
+  it("does not write when the pre-rename revision read fails", async () => {
+    if (process.platform === "win32") return
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-revision-fail-"))
+    const file = path.join(dir, "n.ipynb")
+    const body = `${JSON.stringify(
+      { cells: [], metadata: { keep: true }, nbformat: 4, nbformat_minor: 5 },
+      null,
+      1
+    )}\n`
+    const sink = makeWarningSink()
+    try {
+      const svc = makeNotebookFileService({ worktree: dir, warningSink: sink })
+      const read = await Effect.runPromise(svc.readWithText(file).pipe(Effect.orElseSucceed(() => undefined)))
+      void read
+      fs.writeFileSync(file, body)
+      const before = fs.readFileSync(file)
+      fs.chmodSync(file, 0o000)
+      try {
+        const exit = await Effect.runPromiseExit(
+          svc.writeAtomic(
+            file,
+            { cells: [], metadata: { replaced: true }, nbformat: 4, nbformat_minor: 5 } as never,
+            {
+              previousText: body,
+              format: {
+                unit: " ",
+                newline: "\n",
+                itemSeparator: ", ",
+                keySeparator: ": ",
+                ensureAscii: false,
+                trailingNewline: true
+              }
+            }
+          )
+        )
+        expect(exit._tag).toBe("Failure")
+      } finally {
+        fs.chmodSync(file, 0o600)
+      }
+      expect(fs.readFileSync(file).equals(before)).toBe(true)
+    } finally {
+      try { fs.chmodSync(file, 0o600) } catch {}
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

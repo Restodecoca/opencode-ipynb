@@ -522,13 +522,24 @@ const buildFileService = (
               try {
                 current = await fsp.readFile(target, { encoding: "utf8" })
               } catch (revisionError) {
-                warningSink?.add(
-                  warningFrom(
-                    "revision-check",
-                    revisionError,
-                    "could not verify the notebook revision before writing"
+                const code = (revisionError as NodeJS.ErrnoException).code
+                if (code !== "ENOENT" && code !== "ENOTDIR") {
+                  warningSink?.add(
+                    warningFrom(
+                      "revision-check",
+                      revisionError,
+                      "could not verify the notebook revision before writing"
+                    )
                   )
-                )
+                  throw new NotebookValidationError({
+                    message:
+                      "the notebook revision could not be verified before the write",
+                    filePath,
+                    issues: [
+                      "the file could not be read; fix its permissions or remove it explicitly"
+                    ]
+                  })
+                }
               }
               if (current !== undefined && current !== options.previousText) {
                 throw new NotebookValidationError({

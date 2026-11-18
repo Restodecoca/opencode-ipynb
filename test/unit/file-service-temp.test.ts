@@ -74,7 +74,7 @@ describe("writeAtomic temp handling", () => {
 })
 
 describe("revision re-check reporting", () => {
-  it("reports when the pre-write revision read fails", async () => {
+  it("recreates a deleted notebook and records the revision warning", async () => {
     await withTempDir(async (dir) => {
       const file = path.join(dir, "gone.ipynb")
       const sink = makeWarningSink()
@@ -86,8 +86,31 @@ describe("revision re-check reporting", () => {
         svc.writeAtomic(file, notebook() as never, { previousText: before })
       )
       expect(outcome.mode).toBeDefined()
-      const warnings = sink.drain()
-      expect(warnings.some((warning) => warning.source === "revision-check")).toBe(true)
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toBeDefined()
+    })
+  })
+
+  it("refuses to write when the revision re-read fails for a reason other than absence", async () => {
+    if (process.platform === "win32") return
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "locked.ipynb")
+      const sink = makeWarningSink()
+      const svc = makeNotebookFileService({ warningSink: sink })
+      const body = `${JSON.stringify(notebook(), null, 1)}\n`
+      fs.writeFileSync(file, body)
+      const before = fs.readFileSync(file)
+      fs.chmodSync(file, 0o000)
+      try {
+        const exit = await Effect.runPromiseExit(
+          svc.writeAtomic(file, notebook() as never, { previousText: body })
+        )
+        expect(exit._tag).toBe("Failure")
+      } finally {
+        fs.chmodSync(file, 0o600)
+      }
+      expect(fs.readFileSync(file).equals(before)).toBe(true)
+      void sink
     })
   })
 })
