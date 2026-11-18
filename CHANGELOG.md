@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Writes are byte-stable (issue #2): the zod schemas now validate only, and the
-  raw `JSON.parse` object is mutated, so no write re-emits the notebook in
+  raw `JSON.parse` object is passed through unchanged (`applyNotebookDefaults`
+  is pure and returns a clone), so no write re-emits the notebook in
   schema-declaration order. `src/utils/json-patch.ts` splices only the changed
   values into the stored text, so untouched bytes keep their key order, layout,
   escapes, and number literals.
@@ -15,7 +16,8 @@
   `nbformat.read` rejoins when the notebook stores `source` as line arrays, so
   saving outputs does not reflow those outputs.
 - Defaulted keys (`metadata`, cell `outputs`) are inserted in sorted position
-  instead of appended, so they do not break nbformat's key order.
+  when the object's keys are already sorted, and appended otherwise, so an
+  existing key order is never reordered to make room for a default.
 - README: documented the byte-stability guarantee, the `ipynb_clean`
   `normalizeSource` exception, and the `clearOutputs: "auto"` execution-count
   behavior.
@@ -53,9 +55,10 @@
   instead of disappearing; a process that is already gone counts as success
   rather than as a warning. The kill helpers also refuse a reported pid of 1 so
   a lying helper can never broadcast a signal.
-- Diagnostics sidecars are no longer rewritten when their content is unchanged,
-  preserving their mtime and skipping the temp-file plus rename on repeated
-  diagnostics of the same notebook.
+- The LSP materialized sidecar (`opencode-ipynb-lsp-<hash>.py`) is no longer
+  rewritten when its content is unchanged, preserving its mtime and skipping
+  the temp-file plus rename on repeated refreshes. The diagnostics temp file is
+  still rewritten on every call.
 - The silence guard, Lean proofs, and TLA+ models were hardened alongside: every
   deliberately silent site is inventoried in `docs/contributing.md`, and each
   spec ships with a dishonest twin plus vacuity probes (see that guide).

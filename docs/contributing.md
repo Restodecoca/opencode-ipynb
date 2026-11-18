@@ -112,9 +112,10 @@ read `process.env` for options inside tools/services.
 - Prefer a failing regression test before a fix. Security tests must cover
   both the normal path and the symlink/escape path.
 - Notebook writes must stay byte-stable: keep `test/unit/notebook-write-order.test.ts`
-  and `test/unit/notebook-layout.test.ts` green. Services mutate the raw
-  `JSON.parse` object, never `Schema.parse` output, and pass the `format` and
-  `previousText` from `readWithText` to `writeAtomic`.
+  and `test/unit/notebook-layout.test.ts` green. Services work with the raw
+  `JSON.parse` object, never `Schema.parse` output (which reorders keys), keep
+  it unmutated (`applyNotebookDefaults` is pure and returns a clone), and pass
+  the `format` and `previousText` from `readWithText` to `writeAtomic`.
 - When changing the hook, test the changed/no-op matrix (`changed: false`,
   output-only clears, failed tools, `save: false`).
 
