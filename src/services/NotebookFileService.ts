@@ -126,10 +126,7 @@ export interface NotebookFileServiceShape {
     }
   ) => Effect.Effect<
     WriteOutcome,
-    | NotebookParseError
-    | NotebookValidationError
-    | NotebookWriteError
-    | PathOutsideWorktreeError
+    NotebookValidationError | NotebookWriteError | PathOutsideWorktreeError
   >
   readonly withFileLock: <A, E, R>(
     filePath: string,
@@ -269,13 +266,12 @@ const buildFileService = (
               })
     })
 
-  const parseAndValidate = (
-    text: string,
+  const validateNotebookShape = (
+    value: unknown,
     filePath: string
-  ): Effect.Effect<NotebookRaw, NotebookParseError | NotebookValidationError> =>
+  ): Effect.Effect<NotebookRaw, NotebookValidationError> =>
     Effect.gen(function* () {
-      const raw = yield* safeParseJson(text, filePath)
-      const parsed = NotebookSchema.safeParse(raw)
+      const parsed = NotebookSchema.safeParse(value)
       if (!parsed.success) {
         const issues = parsed.error.issues.map(
           (i) => `${i.path.join(".") || "<root>"}: ${i.message}`
@@ -305,6 +301,16 @@ const buildFileService = (
           }
         }
       }
+      return data
+    })
+
+  const parseAndValidate = (
+    text: string,
+    filePath: string
+  ): Effect.Effect<NotebookRaw, NotebookParseError | NotebookValidationError> =>
+    Effect.gen(function* () {
+      const raw = yield* safeParseJson(text, filePath)
+      yield* validateNotebookShape(raw, filePath)
       return applyNotebookDefaults(raw)
     })
 
@@ -330,10 +336,7 @@ const buildFileService = (
     }
   ): Effect.Effect<
     WriteOutcome,
-    | NotebookParseError
-    | NotebookValidationError
-    | NotebookWriteError
-    | PathOutsideWorktreeError
+    NotebookValidationError | NotebookWriteError | PathOutsideWorktreeError
   > =>
     Effect.gen(function* () {
       const stored =
@@ -353,7 +356,7 @@ const buildFileService = (
           issues: ["split the notebook or reduce large outputs"]
         })
       }
-      yield* parseAndValidate(serialized, filePath)
+      yield* validateNotebookShape(notebook, filePath)
       return yield* Effect.tryPromise({
         try: async () => {
           const dir = path.dirname(filePath)
