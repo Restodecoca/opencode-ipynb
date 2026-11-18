@@ -183,3 +183,17 @@ Every review, human or agent, must produce evidence rather than confidence.
 `./scripts-verify.sh` runs the Lean build and every TLA+ model. `bun run
 scripts/bench-writes.ts` asserts that write cost stays linear in the notebook
 size; a superlinear result fails the build. CI runs both.
+
+### Deliberately silent sites
+
+Three kinds of failure stay unreported on purpose, and a review should not
+flag them:
+
+- Chaining an existing lock (`await previous.catch(...)`) — the previous holder
+  already ran; there is no intent to defeat.
+- Closing a read-only file descriptor we are done with — no data can be lost and
+  there is no remedy.
+- The host's `context.progress()` — a refused progress update is not a plugin
+  failure.
+
+Everything else must reach a `WarningSink`.
