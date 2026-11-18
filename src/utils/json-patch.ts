@@ -18,6 +18,7 @@ interface ArrayNode {
   readonly start: number
   readonly end: number
   readonly items: ReadonlyArray<JsonNode>
+  readonly value: ReadonlyArray<unknown>
 }
 
 interface ObjectEntry {
@@ -31,6 +32,7 @@ interface ObjectNode {
   readonly start: number
   readonly end: number
   readonly entries: ReadonlyArray<ObjectEntry>
+  readonly value: Record<string, unknown>
 }
 
 export type JsonNode = LiteralNode | ArrayNode | ObjectNode
@@ -70,7 +72,9 @@ const parseNode = (text: string, from: number): JsonNode => {
   if (char === "{") {
     const entries: ObjectEntry[] = []
     let pos = skipWhitespace(text, start + 1)
-    if (text[pos] === "}") return { kind: "object", start, end: pos + 1, entries }
+    if (text[pos] === "}") {
+      return { kind: "object", start, end: pos + 1, entries, value: {} }
+    }
     for (;;) {
       const keyStart = skipWhitespace(text, pos)
       const keyEnd = parseStringSpan(text, keyStart)
@@ -84,14 +88,20 @@ const parseNode = (text: string, from: number): JsonNode => {
         pos += 1
         continue
       }
-      if (text[pos] === "}") return { kind: "object", start, end: pos + 1, entries }
+      if (text[pos] === "}") {
+        const value: Record<string, unknown> = {}
+        for (const entry of entries) value[entry.key] = entry.value.value
+        return { kind: "object", start, end: pos + 1, entries, value }
+      }
       throw new SyntaxError("expected , or } in object")
     }
   }
   if (char === "[") {
     const items: JsonNode[] = []
     let pos = skipWhitespace(text, start + 1)
-    if (text[pos] === "]") return { kind: "array", start, end: pos + 1, items }
+    if (text[pos] === "]") {
+      return { kind: "array", start, end: pos + 1, items, value: [] }
+    }
     for (;;) {
       const value = parseNode(text, pos)
       items.push(value)
@@ -100,7 +110,15 @@ const parseNode = (text: string, from: number): JsonNode => {
         pos += 1
         continue
       }
-      if (text[pos] === "]") return { kind: "array", start, end: pos + 1, items }
+      if (text[pos] === "]") {
+        return {
+          kind: "array",
+          start,
+          end: pos + 1,
+          items,
+          value: items.map((item) => item.value)
+        }
+      }
       throw new SyntaxError("expected , or ] in array")
     }
   }
@@ -294,10 +312,6 @@ const suffixLength = (
   return count
 }
 
-const readNode = (layout: Layout, node: JsonNode): unknown =>
-  node.kind === "literal"
-    ? node.value
-    : (JSON.parse(layout.text.slice(node.start, node.end)) as unknown)
 
 const patchArray = (
   value: ReadonlyArray<unknown>,
@@ -307,7 +321,7 @@ const patchArray = (
   indent: string
 ): void => {
   const multiline = isMultiline(layout.text, node)
-  const oldItems = node.items.map((item) => readNode(layout, item))
+  const oldItems = node.items.map((item) => item.value)
   const prefix = prefixLength(oldItems, value)
   const suffix = suffixLength(oldItems, value, prefix)
   const oldMiddle = node.items.slice(prefix, node.items.length - suffix)
@@ -318,16 +332,20 @@ const patchArray = (
     ? `,${layout.style.newline}${childIndent}`
     : layout.style.itemSeparator
 
-  // A value that only moved keeps its original text, so number literals,
-  // escapes and layout are not re-serialized from the parsed JS value.
-  const rawByValue = new Map<string, string>()
+  const rawByIdentity = new Map<unknown, string>()
+  const rawByKey = new Map<string, string>()
   for (let index = 0; index < node.items.length; index += 1) {
+    const item = oldItems[index]
     const source = node.items[index]!
     const raw = layout.text.slice(source.start, source.end)
-    rawByValue.set(canonicalJson(oldItems[index]), raw)
+    if (item !== null && typeof item === "object") rawByIdentity.set(item, raw)
+    rawByKey.set(canonicalJson(item), raw)
   }
   const rawFor = (item: unknown): string | undefined => {
-    const raw = rawByValue.get(canonicalJson(item))
+    const raw =
+      (item !== null && typeof item === "object"
+        ? rawByIdentity.get(item)
+        : undefined) ?? rawByKey.get(canonicalJson(item))
     if (raw === undefined) return undefined
     return raw.includes("\n") && !fileMultiline ? undefined : raw
   }
@@ -529,7 +547,7 @@ const patchObject = (
   for (const [key, next] of Object.entries(value)) {
     const entry = byKey.get(key)
     if (entry === undefined) continue
-    patchNode(next, readNode(layout, entry.value), entry.value, edits, layout, childIndent)
+    patchNode(next, entry.value.value, entry.value, edits, layout, childIndent)
   }
 }
 
@@ -601,7 +619,7 @@ export const patchJsonTextDetailed = (
   let previous: unknown
   try {
     root = parseNode(text, 0)
-    previous = JSON.parse(text) as unknown
+    previous = root.value
   } catch {
     return { reason: "parse-failed" }
   }
