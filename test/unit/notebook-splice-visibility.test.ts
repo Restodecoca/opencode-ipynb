@@ -10,6 +10,7 @@ import {
   makePermissionService
 } from "../../src/services/index.js"
 import type { ToolContext } from "../../src/tool.js"
+import { makeWarningSink } from "../../src/utils/warnings.js"
 
 const ctx = (d: string) => ({
   sessionID: "t",
@@ -85,12 +86,53 @@ describe("write mode is observable", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "splice-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, notebook)
+    const sink = makeWarningSink()
     try {
-      const result = await run(
-        setup(dir).editCell(file, { cellIndex: 0, source: "# B", clearOutputs: "never" })
+      const fileSvc = makeNotebookFileService({ warningSink: sink })
+      const document = JSON.parse(notebook) as {
+        cells: Array<Record<string, unknown>>
+        metadata: Record<string, unknown>
+      }
+      const next = {
+        ...document,
+        metadata: { ...document.metadata, ans: NaN }
+      }
+      const read = await Effect.runPromise(fileSvc.readWithText(file))
+      const outcome = await Effect.runPromise(
+        fileSvc.writeAtomic(file, next as never, {
+          format: read.format,
+          previousText: read.text
+        })
       )
-      expect(result.writeMode).toBe("patched")
-      expect(result.writeModeReason).toBeUndefined()
+      expect(outcome.mode).toBe("fallback")
+      expect(outcome.reason).toBe("verification-failed")
+      expect(sink.drain().some((warning: { source: string }) => warning.source === "json-patch")).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("propagates the write outcome from the service instead of assuming a patch", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "splice-outcome-"))
+    const file = path.join(dir, "n.ipynb")
+    fs.writeFileSync(file, notebook)
+    try {
+      const pathSvc = makePathService({
+        directory: dir,
+        worktree: dir,
+        platform: process.platform
+      })
+      const real = makeNotebookFileService()
+      const fileSvc = {
+        ...real,
+        writeAtomic: (() => Effect.succeed({ mode: "fallback" as const, reason: "not-representable" as const })) as typeof real.writeAtomic
+      }
+      const edit = makeEditImpl(pathSvc, fileSvc, makePermissionService(ctx(dir)))
+      const result = await run(
+        edit.editCell(file, { cellIndex: 0, source: "# B", clearOutputs: "never" })
+      )
+      expect(result.writeMode).toBe("fallback")
+      expect(result.writeModeReason).toBe("not-representable")
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
