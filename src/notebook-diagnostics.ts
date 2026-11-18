@@ -175,10 +175,10 @@ const runPyright = (
       windowsVerbatimArguments: verbatim,
       stdio: ["ignore", "pipe", "pipe"]
     })
-    let stdout = ""
-    let stderr = ""
     let stdoutBytes = 0
     let stderrBytes = 0
+    const stdoutParts: string[] = []
+    const stderrParts: string[] = []
     const decoder = new StringDecoder("utf8")
     const stderrDecoder = new StringDecoder("utf8")
     let timedOut = false
@@ -191,8 +191,8 @@ const runPyright = (
       clearTimeout(timer)
       signal?.removeEventListener("abort", onAbort)
       resolve({
-        stdout: stdout + decoder.end(),
-        stderr: stderr + stderrDecoder.end(),
+        stdout: stdoutParts.join("") + decoder.end(),
+        stderr: stderrParts.join("") + stderrDecoder.end(),
         code: exitCode,
         timedOut,
         aborted
@@ -223,13 +223,13 @@ const runPyright = (
       if (stdoutBytes >= 8 * 1024 * 1024) return
       const take = chunk.subarray(0, 8 * 1024 * 1024 - stdoutBytes)
       stdoutBytes += take.length
-      stdout += decoder.write(take)
+      stdoutParts.push(decoder.write(take))
     })
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderrBytes >= 4_000) return
       const take = chunk.subarray(0, 4_000 - stderrBytes)
       stderrBytes += take.length
-      stderr += stderrDecoder.write(take)
+      stderrParts.push(stderrDecoder.write(take))
     })
     child.on("error", (error) => {
       clearTimeout(timer)

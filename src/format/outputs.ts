@@ -195,8 +195,8 @@ export const formatOutputs = (
     return ""
   }
   const sections: string[] = []
-  let stdout = ""
-  let stderr = ""
+  const stdoutParts: string[] = []
+  const stderrParts: string[] = []
   const displaySections: string[] = []
   const resultSections: string[] = []
   const errorSections: string[] = []
@@ -207,9 +207,9 @@ export const formatOutputs = (
       const name = String(out["name"] ?? "")
       const text = outputTextToString(out["text"])
       if (name === "stderr") {
-        stderr += text
+        stderrParts.push(text)
       } else {
-        stdout += text
+        stdoutParts.push(text)
       }
     } else if (kind === "display_data") {
       const data = (out["data"] as Record<string, unknown> | undefined) ?? {}
@@ -226,6 +226,9 @@ export const formatOutputs = (
       errorSections.push(formatError(ename, evalue, traceback, opts.maxTracebackChars, opts.includeFullTraceback))
     }
   }
+
+  const stdout = stdoutParts.join("")
+  const stderr = stderrParts.join("")
 
   if (stdout) {
     sections.push(`- **stdout**:\n${formatStream(stdout, opts.maxOutputChars)}`)
@@ -267,8 +270,8 @@ export const formatOutputsDetailed = async (
     return { rendered: "", attachments: [] }
   }
   const sections: string[] = []
-  let stdout = ""
-  let stderr = ""
+  const stdoutParts: string[] = []
+  const stderrParts: string[] = []
   const displaySections: string[] = []
   const resultSections: string[] = []
   const errorSections: string[] = []
@@ -280,9 +283,9 @@ export const formatOutputsDetailed = async (
       const name = String(out["name"] ?? "")
       const text = outputTextToString(out["text"])
       if (name === "stderr") {
-        stderr += text
+        stderrParts.push(text)
       } else {
-        stdout += text
+        stdoutParts.push(text)
       }
     } else if (kind === "display_data") {
       const data = (out["data"] as Record<string, unknown> | undefined) ?? {}
@@ -299,6 +302,9 @@ export const formatOutputsDetailed = async (
       errorSections.push(formatError(ename, evalue, traceback, opts.maxTracebackChars, opts.includeFullTraceback))
     }
   }
+
+  const stdout = stdoutParts.join("")
+  const stderr = stderrParts.join("")
 
   if (stdout) {
     sections.push(`- **stdout**:\n${formatStream(stdout, opts.maxOutputChars)}`)
