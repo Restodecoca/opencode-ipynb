@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from typing import Any, Dict, Iterable, List, Optional
@@ -879,6 +880,50 @@ def _run_serve_request(
     return response
 
 
+def _start_parent_watchdog() -> None:
+    """Exit and kill the kernel when the parent process disappears.
+
+    The helper is spawned detached with a blocking stdin read, so a SIGKILL
+    of the plugin would otherwise leave the helper and its kernel alive until
+    the running cell finishes. The parent passes a pipe whose write end dies
+    with it; EOF on that descriptor means we are orphaned. When no descriptor
+    is passed, fall back to watching our parent pid.
+    """
+    raw = os.environ.pop("OPENCODE_IPYNB_PARENT_FD", None)
+    fd: Optional[int] = None
+    if raw is not None:
+        try:
+            candidate = int(raw)
+            os.fstat(candidate)
+            fd = candidate
+        except (TypeError, ValueError, OSError):
+            fd = None
+
+    def watch() -> None:
+        try:
+            if fd is not None:
+                while True:
+                    chunk = os.read(fd, 1)
+                    if not chunk:
+                        break
+            else:
+                parent = os.getppid()
+                while os.getppid() == parent:
+                    time.sleep(0.25)
+        except Exception:
+            pass
+        client = _ACTIVE_CLIENT
+        if client is not None:
+            try:
+                _kill_kernel_process_group(client)
+            except Exception:
+                pass
+        os._exit(0)
+
+    thread = threading.Thread(target=watch, name="parent-watchdog", daemon=True)
+    thread.start()
+
+
 def _serve_mode(init_req: Dict[str, Any]) -> int:
     """Warm-kernel loop. Initializes one kernel and serves NDJSON
     requests until ``{"mode": "shutdown"}`` or EOF on stdin.
@@ -994,6 +1039,7 @@ def _serve_mode(init_req: Dict[str, Any]) -> int:
         ready_response["id"] = init_req["id"]
     _write_response(ready_response)
 
+    _start_parent_watchdog()
     requests_handled = 0
     try:
         while True:
