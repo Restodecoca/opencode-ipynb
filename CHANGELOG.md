@@ -33,6 +33,17 @@
   of being decoded with replacement characters and silently rewritten later,
   matching `nbformat`'s `UnicodeDecodeError`. The same applies to a UTF-8 BOM
   prefix, which `nbformat` already rejects as not JSON.
+- A tool call whose context is already cancelled changes nothing and returns a
+  cancellation error, so a retried insert or delete cannot apply twice.
+- A write that another process replaces immediately after the rename fails with
+  a concurrent-replacement error instead of reporting success for a change that
+  is no longer in the file. The in-process lock is documented as such.
+- Windows path confinement no longer accepts a drive root, a path on another
+  drive, or an outside path whose ancestor is a drive root; the regression was
+  found on a real Windows host and the CI now runs the suite there.
+- Kernel shutdown through a symlink still stops the kernel after the link is
+  deleted, and a closed diagnostics/read handle reports its cleanup failure
+  instead of leaking the descriptor or the temp file.
 - On Windows, a pyright `.cmd`/`.bat` shim whose command line contains shell
   metacharacters (`%`, `&`, `|`, `<`, `>`, `^`, quotes, CR/LF) is refused with
   an `unsafe-shell-command` diagnostics skip; the command is never handed to

@@ -82,8 +82,14 @@ reports an invalid `OPENCODE_IPYNB_OPTIONS` through the services'
 Path checks happen before work, and the file service resolves and verifies the
 real path at use time (reads use the resolved path; writes target the resolved
 file/parent). This removes the practical symlink-swap window for notebook I/O
-without requiring a directory-fd API from Node. Residual path-based races are
-documented as a limitation rather than claimed impossible. Bare `python` and
+without requiring a directory-fd API from Node. A parent-directory swap between
+the check and the rename remains possible for a local actor that can rename
+directories inside the worktree; that residual race is documented as a
+limitation rather than claimed impossible. The write region is uninterruptible,
+so the file lock is released only after the rename settles, and after the
+rename the write compares the target inode with the temp file's: when another
+process replaced the file in between, the call fails with a
+concurrent-replacement error instead of reporting a lost write as success. Bare `python` and
 `pyright` names are resolved to absolute PATH entries before spawning; if
 pyright is not found, the plugin fails closed instead of letting `cmd.exe`
 search the project cwd. Relative `pythonPath`/`pyrightPath` values are rejected.
