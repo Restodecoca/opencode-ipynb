@@ -1,12 +1,18 @@
 import * as fsp from "node:fs/promises"
+import * as path from "node:path"
 
-const ATTEMPTS = 5
-const DELAY_MS = 2
+const ATTEMPTS = 3
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
+const parentIsStable = async (target: string): Promise<boolean> => {
+  const parent = path.dirname(target)
+  if (parent === target) return false
+  try {
+    await fsp.stat(parent)
+    return true
+  } catch {
+    return false
+  }
+}
 
 export const realpathWithRetry = async (target: string): Promise<string> => {
   let failure: unknown
@@ -16,7 +22,8 @@ export const realpathWithRetry = async (target: string): Promise<string> => {
     } catch (error) {
       failure = error
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-      if (attempt + 1 < ATTEMPTS) await sleep(DELAY_MS)
+      if (!(await parentIsStable(target))) throw error
+      if (attempt + 1 < ATTEMPTS) await new Promise<void>((resolve) => setImmediate(resolve))
     }
   }
   throw failure
