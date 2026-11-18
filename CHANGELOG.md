@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Writes are byte-stable (issue #2): the zod schemas now validate only, and the
+  raw `JSON.parse` object is mutated, so no write re-emits the notebook in
+  schema-declaration order. `src/utils/json-patch.ts` splices only the changed
+  values into the stored text, so untouched bytes keep their key order, layout,
+  escapes, and number literals.
+- `ipynb_edit` mirrors the stored `source` shape: a notebook that stores line
+  arrays keeps line arrays (split like nbformat/`splitlines(keepends=True)`); a
+  single-string notebook keeps one string. Inserted cells inherit the shape of
+  the notebook's first cell.
+- `ipynb_run save=true` splits the `stream.text`/text-mime strings that
+  `nbformat.read` rejoins when the notebook stores `source` as line arrays, so
+  saving outputs does not reflow those outputs.
+- Defaulted keys (`metadata`, cell `outputs`) are inserted in sorted position
+  instead of appended, so they do not break nbformat's key order.
+- README: documented the byte-stability guarantee, the `ipynb_clean`
+  `normalizeSource` exception, and the `clearOutputs: "auto"` execution-count
+  behavior.
+
 ## 2.0.0
 
 - OpenCode V2-only plugin (`@opencode/plugin` 2.2.2). The V1 `server()` export is removed.

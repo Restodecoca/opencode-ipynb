@@ -54,6 +54,13 @@ per-call instances but shares module-level state where required:
 - `NotebookFileService`: validates notebooks, serializes writes by **real
   path** (so symlink aliases share a lock), and pins the real path inside the
   worktree before reading/writing. Temp files are written with `wx` and renamed.
+  The zod schemas are **validation-only**: reads return the raw `JSON.parse`
+  object, and `src/utils/json-patch.ts` splices only the changed values into the
+  stored text, so untouched bytes keep their layout (indentation, inline arrays,
+  escapes, number literals, line endings). Do not write `parsed.data`;
+  `z.object` rebuilds its output in declaration order and reflows the notebook
+  (issue #2). Keep `test/unit/notebook-write-order.test.ts` and
+  `test/unit/notebook-layout.test.ts` green.
 - `NotebookEditService`, `NotebookExecutionService`, `NotebookReadService`,
   etc.: feature logic. `NotebookEditService.editCell` returns the in-memory
   notebook plus cell metadata and a `changed` flag internally; the tool layer

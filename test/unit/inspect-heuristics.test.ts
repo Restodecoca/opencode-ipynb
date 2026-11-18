@@ -48,6 +48,7 @@ const rawCell = (source: string): RawCellRaw => ({
 
 const buildNotebook = (cells: ReadonlyArray<CodeCellRaw | MarkdownCellRaw | RawCellRaw>): NotebookRaw => ({
   nbformat: 4,
+  nbformat_minor: 5,
   metadata: {},
   cells: [...cells]
 })

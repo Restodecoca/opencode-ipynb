@@ -36,7 +36,7 @@ import {
   MAX_RUN_RESPONSE_CHARS
 } from "../utils/limits.js"
 import { formatHint, type TruncationHintKey } from "../utils/i18n.js"
-import type { NotebookRaw } from "../domain/notebook.js"
+import { splitSourceLines, type NotebookRaw } from "../domain/notebook.js"
 
 export type ExecutionMode = "cell" | "range" | "all" | "from"
 
@@ -399,6 +399,91 @@ const truncateRunResponse = (
   }
 }
 
+const SPLIT_TEXT_MIMES = new Set([
+  "application/javascript",
+  "image/svg+xml"
+])
+
+const isSplittableMime = (key: string): boolean =>
+  key.startsWith("text/") || SPLIT_TEXT_MIMES.has(key)
+
+export type TextShape = "arrays" | "strings"
+
+const shapeOfValue = (value: unknown): TextShape | undefined => {
+  if (typeof value === "string") return "strings"
+  if (Array.isArray(value)) return "arrays"
+  return undefined
+}
+
+export const textShapeOfCell = (cell: CellRaw, fallback: TextShape): TextShape => {
+  const evidences: TextShape[] = []
+  if (cell.cell_type === "code") {
+    for (const output of (cell as CodeCellRaw).outputs) {
+      const text = shapeOfValue(output["text"])
+      if (text !== undefined) evidences.push(text)
+      const data = output["data"]
+      if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+        for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+          if (!isSplittableMime(key)) continue
+          const shape = shapeOfValue(value)
+          if (shape !== undefined) evidences.push(shape)
+        }
+      }
+    }
+  }
+  if (evidences.length > 0) {
+    const arrays = evidences.filter((shape) => shape === "arrays").length
+    return arrays * 2 >= evidences.length ? "arrays" : "strings"
+  }
+  if (Array.isArray(cell.source)) return "arrays"
+  if (typeof cell.source === "string") return "strings"
+  return fallback
+}
+
+const splitMimebundle = (
+  data: Record<string, unknown>
+): Record<string, unknown> => {
+  const next: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(data)) {
+    if (typeof value === "string" && isSplittableMime(key)) {
+      next[key] = splitSourceLines(value)
+    } else {
+      next[key] = value
+    }
+  }
+  return next
+}
+
+export const restoreNbformatLineArrays = (
+  outputs: ReadonlyArray<Record<string, unknown>>,
+  splitLineArrays: boolean
+): Array<Record<string, unknown>> => {
+  if (!splitLineArrays) return [...outputs]
+  return outputs.map((output) => {
+    const next: Record<string, unknown> = { ...output }
+    const outputType = next["output_type"]
+    if (outputType === "execute_result" || outputType === "display_data") {
+      const data = next["data"]
+      if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+        next["data"] = splitMimebundle(data as Record<string, unknown>)
+      }
+    }
+    if (typeof next["text"] === "string") {
+      next["text"] = splitSourceLines(next["text"] as string)
+    }
+    return next
+  })
+}
+
+export const notebookTextShape = (notebook: NotebookRaw): TextShape => {
+  const shapes = notebook.cells.map((cell) => textShapeOfCell(cell as CellRaw, "strings"))
+  const arrays = shapes.filter((shape) => shape === "arrays").length
+  return arrays * 2 >= shapes.length ? "arrays" : "strings"
+}
+
+export const notebookUsesLineArrays = (notebook: NotebookRaw): boolean =>
+  notebookTextShape(notebook) === "arrays"
+
 export const buildPersistedOutputs = (
   summary: CellExecutionSummary
 ): Array<Record<string, unknown>> => {
@@ -648,9 +733,17 @@ const makeExecutionImpl = (
         }
 
         let beforeHash: string | undefined
+        let beforeShapes: Map<number, TextShape> | undefined
         if (request.save) {
           const before = yield* fileSvc.readWithText(kernelPath)
           beforeHash = createHash("sha256").update(before.text).digest("hex")
+          const fallback = notebookTextShape(before.notebook)
+          beforeShapes = new Map(
+            before.notebook.cells.map((cell, index) => [
+              index,
+              textShapeOfCell(cell as CellRaw, fallback)
+            ])
+          )
         }
 
         const startTs = Date.now()
@@ -691,6 +784,7 @@ const makeExecutionImpl = (
               const notebook = snapshot.notebook
               if (notebook.cells.length > 0) {
                 const cellsByIndex = new Map<number, CodeCellRaw>()
+                const notebookShape = notebookTextShape(notebook)
                 for (const idx of response.executedCells) {
                   if (idx < 0 || idx >= notebook.cells.length) {
                     return yield* new CellIndexOutOfBoundsError({
@@ -706,7 +800,10 @@ const makeExecutionImpl = (
                   if (!summary) continue
                   const next: CodeCellRaw = {
                     ...cell,
-                    outputs: (summary.rawOutputs ?? buildPersistedOutputs(summary)) as CodeCellRaw["outputs"],
+                    outputs: restoreNbformatLineArrays(
+                      summary.rawOutputs ?? buildPersistedOutputs(summary),
+                      (beforeShapes?.get(idx) ?? notebookShape) === "arrays"
+                    ) as CodeCellRaw["outputs"],
                     execution_count:
                       summary.executionCount !== undefined && summary.executionCount !== null
                         ? summary.executionCount
@@ -732,7 +829,9 @@ const makeExecutionImpl = (
                   const newCells = notebook.cells.map((c, i) => cellsByIndex.get(i) ?? c)
                   const newNotebook: NotebookRaw = { ...notebook, cells: newCells }
                   yield* fileSvc.writeAtomic(kernelPath, newNotebook, {
-                    noFollowFinal: true
+                    noFollowFinal: true,
+                    format: snapshot.format,
+                    previousText: snapshot.text
                   })
                   wrote = true
                 }

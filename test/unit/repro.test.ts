@@ -64,6 +64,7 @@ const rawCell = (source: string): RawCellRaw => ({
 
 const buildNotebook = (cells: ReadonlyArray<CodeCellRaw | MarkdownCellRaw | RawCellRaw>): NotebookRaw => ({
   nbformat: 4,
+  nbformat_minor: 5,
   metadata: {
     kernelspec: { display_name: "Python 3", name: "python3", language: "python" },
     language_info: { name: "python" }

@@ -10,8 +10,15 @@ import {
   NotebookWriteError,
   PathOutsideWorktreeError
 } from "../domain/errors.js"
-import { NotebookSchema, type NotebookRaw } from "../domain/notebook.js"
-import { safeParseJson, stringifyNotebook } from "../utils/json.js"
+import { NotebookSchema, applyNotebookDefaults, type NotebookRaw } from "../domain/notebook.js"
+import {
+  DEFAULT_NOTEBOOK_FORMAT,
+  detectNotebookFormat,
+  rewriteNotebookText,
+  safeParseJson,
+  stringifyNotebook,
+  type NotebookFormat
+} from "../utils/json.js"
 import { MAX_NOTEBOOK_BYTES } from "../utils/limits.js"
 import { replaceFile } from "../utils/atomic-replace.js"
 
@@ -49,7 +56,11 @@ export interface NotebookFileServiceShape {
   readonly readWithText: (
     filePath: string
   ) => Effect.Effect<
-    { readonly notebook: NotebookRaw; readonly text: string },
+    {
+      readonly notebook: NotebookRaw
+      readonly text: string
+      readonly format: NotebookFormat
+    },
     | NotebookNotFoundError
     | NotebookParseError
     | NotebookValidationError
@@ -58,7 +69,11 @@ export interface NotebookFileServiceShape {
   readonly writeAtomic: (
     filePath: string,
     notebook: NotebookRaw,
-    options?: { readonly noFollowFinal?: boolean }
+    options?: {
+      readonly noFollowFinal?: boolean
+      readonly format?: NotebookFormat
+      readonly previousText?: string
+    }
   ) => Effect.Effect<
     void,
     | NotebookParseError
@@ -229,15 +244,15 @@ const buildFileService = (
           issues
         })
       }
-      const nb = parsed.data
-      if (nb.nbformat < 4) {
+      const data = parsed.data
+      if (data.nbformat < 4) {
         return yield* new NotebookValidationError({
-          message: `unsupported nbformat ${nb.nbformat} (must be >= 4)`,
+          message: `unsupported nbformat ${data.nbformat} (must be >= 4)`,
           filePath,
-          issues: [`nbformat ${nb.nbformat} < 4`]
+          issues: [`nbformat ${data.nbformat} < 4`]
         })
       }
-      for (const [idx, cell] of nb.cells.entries()) {
+      for (const [idx, cell] of data.cells.entries()) {
         if (cell.cell_type === "code") {
           if (typeof cell.execution_count !== "number" && cell.execution_count !== null) {
             return yield* new NotebookValidationError({
@@ -248,13 +263,29 @@ const buildFileService = (
           }
         }
       }
-      return nb
+      return applyNotebookDefaults(raw)
     })
+
+  const readExistingText = (
+    filePath: string
+  ): Effect.Effect<string | undefined, never> =>
+    Effect.tryPromise({
+      try: async () => {
+        const stat = await fsp.stat(filePath)
+        if (!stat.isFile() || stat.size > MAX_NOTEBOOK_BYTES) return undefined
+        return await fsp.readFile(filePath, { encoding: "utf8" })
+      },
+      catch: () => undefined
+    }).pipe(Effect.orElseSucceed(() => undefined))
 
   const writeAtomic = (
     filePath: string,
     notebook: NotebookRaw,
-    options?: { readonly noFollowFinal?: boolean }
+    options?: {
+      readonly noFollowFinal?: boolean
+      readonly format?: NotebookFormat
+      readonly previousText?: string
+    }
   ): Effect.Effect<
     void,
     | NotebookParseError
@@ -263,7 +294,16 @@ const buildFileService = (
     | PathOutsideWorktreeError
   > =>
     Effect.gen(function* () {
-      const serialized = stringifyNotebook(notebook)
+      const stored =
+        options?.format !== undefined && options?.previousText !== undefined
+          ? undefined
+          : yield* readExistingText(filePath)
+      const format = options?.format ?? (stored === undefined ? DEFAULT_NOTEBOOK_FORMAT : detectNotebookFormat(stored))
+      const previousText = options?.previousText ?? stored
+      const serialized =
+        previousText === undefined
+          ? stringifyNotebook(notebook, format)
+          : rewriteNotebookText(previousText, notebook, format)
       if (Buffer.byteLength(serialized, "utf8") > MAX_NOTEBOOK_BYTES) {
         return yield* new NotebookValidationError({
           message: `refusing to write a notebook larger than ${MAX_NOTEBOOK_BYTES} bytes`,
@@ -347,6 +387,20 @@ const buildFileService = (
             `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
           )
           try {
+            if (options?.previousText !== undefined) {
+              const current = await fsp
+                .readFile(target, { encoding: "utf8" })
+                .catch(() => undefined)
+              if (current !== undefined && current !== options.previousText) {
+                throw new NotebookValidationError({
+                  message: "notebook changed while the tool was editing it",
+                  filePath,
+                  issues: [
+                    "the notebook was modified externally; re-read it and retry the edit"
+                  ]
+                })
+              }
+            }
             await fsp.writeFile(tmp, serialized, {
               encoding: "utf8",
               flag: "wx",
@@ -364,10 +418,12 @@ const buildFileService = (
         catch: (err) =>
           err instanceof PathOutsideWorktreeError
             ? err
-            : new NotebookWriteError({
-                message: err instanceof Error ? err.message : String(err),
-                filePath
-              })
+            : err instanceof NotebookValidationError
+              ? err
+              : new NotebookWriteError({
+                  message: err instanceof Error ? err.message : String(err),
+                  filePath
+                })
       })
     })
 
@@ -382,7 +438,7 @@ const buildFileService = (
       Effect.gen(function* () {
         const text = yield* readText(filePath)
         const notebook = yield* parseAndValidate(text, filePath)
-        return { notebook, text }
+        return { notebook, text, format: detectNotebookFormat(text) }
       }),
     writeAtomic,
     withFileLock: (filePath, program) =>

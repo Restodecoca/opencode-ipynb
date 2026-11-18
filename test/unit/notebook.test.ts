@@ -349,24 +349,35 @@ describe("Edit", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
     const file = path.join(dir, "test.ipynb")
     fs.copyFileSync(path.join(FIXTURES, "simple.ipynb"), file)
-    const pathSvc = makePathService({
-      directory: dir,
-      worktree: dir,
-      platform: process.platform
-    })
-    const fileSvc = makeNotebookFileService()
-    const permSvc = makePermissionService(makeFakeContext(dir, dir))
-    const edit = makeEditImpl(pathSvc, fileSvc, permSvc)
-    const originalMeta = (() => {
-      const nb = JSON.parse(fs.readFileSync(file, "utf8")) as { cells: Array<{ cell_type: string; metadata: unknown }> }
-      return nb.cells[0]?.metadata
-    })()
-    const result = await runOrThrow(edit.editCell(file, { cellIndex: 0, source: "# New title\n\nUpdated." }))
-    expect(result.cellType).toBe("markdown")
-    expect(result.clearedOutputs).toBe(false)
-    expect(result.notebook.cells[0]?.metadata as object).toEqual(originalMeta as object)
-    expect((result.notebook.cells[0] as { source: string }).source).toBe("# New title\n\nUpdated.")
-    fs.rmSync(dir, { recursive: true, force: true })
+    try {
+      const pathSvc = makePathService({
+        directory: dir,
+        worktree: dir,
+        platform: process.platform
+      })
+      const fileSvc = makeNotebookFileService()
+      const permSvc = makePermissionService(makeFakeContext(dir, dir))
+      const edit = makeEditImpl(pathSvc, fileSvc, permSvc)
+      const originalMeta = (() => {
+        const nb = JSON.parse(fs.readFileSync(file, "utf8")) as { cells: Array<{ cell_type: string; metadata: unknown }> }
+        return nb.cells[0]?.metadata
+      })()
+      const result = await runOrThrow(edit.editCell(file, { cellIndex: 0, source: "# New title\n\nUpdated." }))
+      expect(result.cellType).toBe("markdown")
+      expect(result.clearedOutputs).toBe(false)
+      expect(result.notebook.cells[0]?.metadata as object).toEqual(originalMeta as object)
+      expect((result.notebook.cells[0] as { source: string[] }).source).toEqual([
+        "# New title\n",
+        "\n",
+        "Updated."
+      ])
+      const onDisk = JSON.parse(fs.readFileSync(file, "utf8")) as {
+        cells: Array<{ source: string | string[] }>
+      }
+      expect(onDisk.cells[0]?.source).toEqual(["# New title\n", "\n", "Updated."])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("clears outputs on a code cell when source changes (auto)", async () => {

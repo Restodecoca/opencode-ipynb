@@ -15,8 +15,8 @@ import type { PathServiceShape } from "./PathService.js"
 import {
   type PermissionServiceShape
 } from "./PermissionService.js"
-import { cellSource, type NotebookRaw } from "../domain/notebook.js"
-import type { CellRaw, CodeCellRaw, MarkdownCellRaw, RawCellRaw } from "../domain/cell.js"
+import { cellSource, formatSourceLike, type NotebookRaw } from "../domain/notebook.js"
+import type { CellRaw, CodeCellRaw, MarkdownCellRaw, RawCellRaw, Source } from "../domain/cell.js"
 import { firstLine, truncatePreview } from "../utils/truncate.js"
 
 export interface EditRequest {
@@ -138,18 +138,20 @@ export interface NotebookEditServiceShape {
 const buildNewCell = (
   cellType: CellType,
   source: string,
-  nbformatMinor: number
+  nbformatMinor: number,
+  previousSource: Source | undefined
 ): CellRaw => {
-  // nbformat 4.5 requires every cell to carry a stable id.
   const id = nbformatMinor >= 5 ? { id: randomUUID() } : {}
+  const shaped =
+    previousSource === undefined ? source : formatSourceLike(previousSource, source)
   if (cellType === "code") {
     const cell: CodeCellRaw = {
       cell_type: "code",
+      execution_count: null,
       ...id,
       metadata: {},
-      execution_count: null,
-      source,
-      outputs: []
+      outputs: [],
+      source: shaped
     }
     return cell
   }
@@ -158,7 +160,7 @@ const buildNewCell = (
       cell_type: "markdown",
       ...id,
       metadata: {},
-      source
+      source: shaped
     }
     return cell
   }
@@ -166,7 +168,7 @@ const buildNewCell = (
     cell_type: "raw",
     ...id,
     metadata: {},
-    source
+    source: shaped
   }
   return cell
 }
@@ -213,6 +215,7 @@ const makeEditImpl = (
             const cell = notebook.cells[idx] as CellRaw
             const oldSource = cellSource(cell)
             const newSource = request.source
+            const newCellSource = formatSourceLike(cell.source, newSource)
             const displayPath = pathSvc.toDisplay(abs)
             const mode = request.clearOutputs ?? "auto"
             const sourceChanged = oldSource !== newSource
@@ -257,19 +260,19 @@ const makeEditImpl = (
                 if (clearedOutputs) {
                   return {
                     ...code,
-                    source: newSource,
+                    source: newCellSource,
                     outputs: [],
                     execution_count: null
                   }
                 }
-                return { ...code, source: newSource }
+                return { ...code, source: newCellSource }
               }
               if (cell.cell_type === "markdown") {
                 const md = cell as MarkdownCellRaw
-                return { ...md, source: newSource }
+                return { ...md, source: newCellSource }
               }
               const raw = cell as RawCellRaw
-              return { ...raw, source: newSource }
+              return { ...raw, source: newCellSource }
             })()
 
             const cells = notebook.cells.slice()
@@ -278,7 +281,9 @@ const makeEditImpl = (
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
             yield* fileSvc.writeAtomic(pinned, newNotebook, {
-              noFollowFinal: true
+              noFollowFinal: true,
+              format: snapshot.format,
+              previousText: snapshot.text
             })
 
             return {
@@ -333,10 +338,12 @@ const makeEditImpl = (
             }
 
             const targetIdx = index === undefined || index >= total ? total : index
+            const template = notebook.cells[0] as CellRaw | undefined
             const newCell = buildNewCell(
               cellType,
               source,
-              notebook.nbformat_minor ?? 0
+              notebook.nbformat_minor ?? 0,
+              template?.source
             )
             const preview = firstLine(source).slice(0, 200)
 
@@ -366,7 +373,9 @@ const makeEditImpl = (
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
             yield* fileSvc.writeAtomic(pinned, newNotebook, {
-              noFollowFinal: true
+              noFollowFinal: true,
+              format: snapshot.format,
+              previousText: snapshot.text
             })
 
             const displayPath = pathSvc.toDisplay(abs)
@@ -447,7 +456,9 @@ const makeEditImpl = (
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
             yield* fileSvc.writeAtomic(pinned, newNotebook, {
-              noFollowFinal: true
+              noFollowFinal: true,
+              format: snapshot.format,
+              previousText: snapshot.text
             })
 
             const displayPath = pathSvc.toDisplay(abs)
@@ -551,7 +562,9 @@ const makeEditImpl = (
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
             yield* fileSvc.writeAtomic(pinned, newNotebook, {
-              noFollowFinal: true
+              noFollowFinal: true,
+              format: snapshot.format,
+              previousText: snapshot.text
             })
 
             return {

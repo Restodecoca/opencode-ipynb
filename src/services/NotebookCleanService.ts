@@ -258,7 +258,9 @@ const makeCleanImpl = (
 
             yield* assertRevisionUnchanged(fileSvc, pinned, revision)
             yield* fileSvc.writeAtomic(pinned, newNotebook, {
-              noFollowFinal: true
+              noFollowFinal: true,
+              format: snapshot.format,
+              previousText: snapshot.text
             })
 
             return {
