@@ -21,6 +21,7 @@ import {
   refreshMaterializedDocument
 } from "./virtual-materialize.js"
 import { NotebookRpc } from "./rpc.js"
+import { bestEffort, makeWarningSink } from "./utils/warnings.js"
 import { v2ToolRegistrations } from "./registrations.js"
 import {
   appendResultText,
@@ -296,12 +297,21 @@ const plugin: Plugin.Plugin = {
     })
 
     return async () => {
+      const sink = makeWarningSink()
       try {
-        await hookRegistration.dispose().catch(() => {})
-        await rpcRegistration.dispose().catch(() => {})
-        await registration.dispose().catch(() => {})
-        await cleanupVirtualDocuments(context.location.directory).catch(() => {})
+        await bestEffort(sink, "cleanup", "hook dispose", () => hookRegistration.dispose())
+        await bestEffort(sink, "cleanup", "rpc dispose", () => rpcRegistration.dispose())
+        await bestEffort(sink, "cleanup", "tool dispose", () => registration.dispose())
+        await bestEffort(sink, "sidecar-cleanup", "virtual documents", () =>
+          cleanupVirtualDocuments(context.location.directory)
+        )
       } finally {
+        for (const warning of sink.drain()) {
+          console.warn(
+            `[opencode-ipynb] ${warning.source}: ${warning.message}` +
+              (warning.detail === undefined ? "" : ` (${warning.detail})`)
+          )
+        }
         // Kill every live warm kernel even when a plugin contribution fails
         // to dispose. A sidecar cleanup error must not leak Python processes.
         await disposeSharedKernelManager(context)
