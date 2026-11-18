@@ -108,7 +108,8 @@ const runPython = (
   payload: RunRequest,
   workingDirectory: string | undefined,
   timeoutMs: number,
-  externalSignal?: AbortSignal
+  externalSignal?: AbortSignal,
+  warningSink?: WarningSink
 ): Effect.Effect<RunResponse, NotebookExecutionError | PythonRunnerError, never> =>
   Effect.gen(function* () {
     const result = yield* Effect.tryPromise({
@@ -130,7 +131,7 @@ const runPython = (
         let stdoutBytes = 0
         let stderrBytes = 0
         let forceTimer: NodeJS.Timeout | undefined
-        const signalTree = (signal: NodeJS.Signals) => {
+        const signalTree = (signal: NodeJS.Signals, notify?: (error: unknown) => void) => {
           if (child.pid === undefined) return
           if (process.platform === "win32") {
             killWindowsTree(child.pid)
@@ -140,14 +141,22 @@ const runPython = (
             } catch {
               try {
                 child.kill(signal)
-              } catch {
+              } catch (directError) {
+                if ((directError as NodeJS.ErrnoException).code !== "ESRCH") {
+                  notify?.(directError)
+                }
               }
             }
           }
         }
         const killTree = () => {
-          signalTree("SIGTERM")
-          forceTimer = setTimeout(() => signalTree("SIGKILL"), 750)
+          const notifyKill = (error: unknown): void => {
+            warningSink?.add(
+              warningFrom("cleanup", error, "killing the python runner after a timeout or abort")
+            )
+          }
+          signalTree("SIGTERM", notifyKill)
+          forceTimer = setTimeout(() => signalTree("SIGKILL", notifyKill), 750)
           forceTimer.unref?.()
         }
         let timer: NodeJS.Timeout | undefined
@@ -848,7 +857,8 @@ const makeExecutionImpl = (
               payload,
               workingDirectory,
               request.timeoutMs,
-              options?.signal
+              options?.signal,
+              requestedSink
             )
         const durationMs = Date.now() - startTs
         const truncated = truncateRunResponse(response, request.maxOutputChars)
@@ -1024,7 +1034,8 @@ const makeExecutionImpl = (
           payload,
           undefined,
           envTimeout,
-          options?.signal
+          options?.signal,
+          reportEnvSink
         )
         if (!response.env) {
           return yield* new PythonRunnerError({

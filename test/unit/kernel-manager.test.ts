@@ -3,12 +3,32 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import { Effect } from "effect"
-import { makeKernelManager } from "../../src/services/KernelManager.js"
+import { makeKernelManager, killPidTree } from "../../src/services/KernelManager.js"
 import { pythonHas } from "../helpers.js"
 
 const HELPER = path.resolve("python", "ipynb_runner.py")
 const FIXTURES = path.resolve("test", "fixtures")
 const SKIP = !pythonHas("nbclient")
+
+describe("killPidTree failure reporting", () => {
+  it("reports when the group kill fails and the direct kill is refused", () => {
+    if (process.platform === "win32") return
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
+    const failures: unknown[] = []
+    killPidTree(2, "SIGTERM", (error) => failures.push(error))
+    expect(failures.length).toBe(1)
+    expect((failures[0] as NodeJS.ErrnoException).code).toBe("EPERM")
+  })
+
+  it("stays silent when the process is already gone", () => {
+    if (process.platform === "win32") return
+    const failures: unknown[] = []
+    killPidTree(10_000_000, "SIGTERM", (error) => failures.push(error))
+    killPidTree(10_000_001, "SIGKILL", (error) => failures.push(error))
+    expect(failures.length).toBe(0)
+  })
+})
+
 const describeIf = (cond: boolean, name: string, fn: () => void): void => {
   if (cond) describe(name, fn)
   else describe.skip(name, fn)

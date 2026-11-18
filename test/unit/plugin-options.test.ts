@@ -6,7 +6,8 @@ import * as path from "node:path"
 import { makePathService } from "../../src/services/PathService.js"
 import { parsePluginOptions, resolvePythonPath, type PluginOptions } from "../../src/plugin-options.js"
 import { resolveToolOptions } from "../../src/tools/_resolveOptions.js"
-import { resolveOptionsFromEnv } from "../../src/services/index.js"
+import { buildServices, resolveOptionsFromEnv } from "../../src/services/index.js"
+import type { ToolContext } from "../../src/tool.js"
 
 const ENV_VAR = "OPENCODE_IPYNB_OPTIONS"
 const ORIGINAL_ENV = process.env[ENV_VAR]
@@ -228,4 +229,58 @@ describe("PathService with allowOutsideWorktree", () => {
     }
   })
 
+})
+
+const makeServicesContext = (): ToolContext =>
+  ({
+    sessionID: "t",
+    messageID: "t",
+    agent: "t",
+    directory: os.tmpdir(),
+    worktree: os.tmpdir(),
+    abort: new AbortController().signal,
+    metadata: () => {},
+    ask: async () => {}
+  }) as unknown as ToolContext
+
+describe("OPENCODE_IPYNB_OPTIONS failure reporting", () => {
+  it("reports unparseable JSON through the built services", () => {
+    setEnv("{ not json")
+    try {
+      const services = buildServices(makeServicesContext())
+      expect(services.envOptionsError).toBeDefined()
+    } finally {
+      setEnv(ORIGINAL_ENV)
+    }
+  })
+
+  it("reports schema-invalid options with the offending field", () => {
+    setEnv(JSON.stringify({ warmKernel: "yes" }))
+    try {
+      const services = buildServices(makeServicesContext())
+      expect(services.envOptionsError).toContain("warmKernel")
+    } finally {
+      setEnv(ORIGINAL_ENV)
+    }
+  })
+
+  it("reports nothing when the options are valid", () => {
+    setEnv(JSON.stringify({ warmKernel: true }))
+    try {
+      const services = buildServices(makeServicesContext())
+      expect(services.envOptionsError).toBeUndefined()
+    } finally {
+      setEnv(ORIGINAL_ENV)
+    }
+  })
+
+  it("reports nothing when the variable is unset", () => {
+    setEnv(undefined)
+    try {
+      const services = buildServices(makeServicesContext())
+      expect(services.envOptionsError).toBeUndefined()
+    } finally {
+      setEnv(ORIGINAL_ENV)
+    }
+  })
 })

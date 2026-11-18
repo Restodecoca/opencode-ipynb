@@ -71,7 +71,7 @@ const shellHelper = (dir: string, preamble: string): string =>
     `#!/bin/sh
 ${preamble}
 IFS= read -r init
-printf '{"ready": true, "pid": 1, "kernelPid": 2}\\n'
+printf '{"ready": true, "pid": %s, "kernelPid": %s}\\n' "$$" "$$"
 IFS= read -r req
 id=$(printf '%s' "$req" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p')
 printf '{"id": %s, "success": true, "executedCells": [], "durationMs": 1, "outputs": []}\\n' "$id"

@@ -68,6 +68,18 @@ export const ipynbDoctorTool = tool({
       const lines: string[] = []
       lines.push("# opencode-ipynb doctor")
       lines.push("")
+      if (services.envOptionsError !== undefined) {
+        lines.push("## Plugin options")
+        lines.push(
+          `- [warning] OPENCODE_IPYNB_OPTIONS is set but invalid: ${sanitizeInline(
+            services.envOptionsError
+          )}`
+        )
+        lines.push(
+          "- instance or default options are in effect; fix the environment variable to use it"
+        )
+        lines.push("")
+      }
       lines.push("## Python interpreter")
       if (doctor.selected) {
         lines.push(

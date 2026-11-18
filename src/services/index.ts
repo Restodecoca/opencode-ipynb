@@ -55,6 +55,7 @@ export interface NotebookServices {
   readonly kernel: KernelManagerShape
   readonly pythonPath: string | undefined
   readonly pythonPathError: string | undefined
+  readonly envOptionsError: string | undefined
   readonly inspect: ReturnType<typeof makeInspectImpl>
   readonly read: NotebookReadServiceShape
   readonly edit: NotebookEditServiceShape
@@ -142,6 +143,7 @@ export const buildServices = (
   options: BuildServicesOptions = {}
 ): NotebookServices => {
   const resolved = resolveOptionsFromEnv(ctx.pluginOptions)
+  const envOptionsErrorMessage = envOptionsError
   const warningSink = options.warningSink
   const pathSvc: PathServiceShape = makePathService({
     directory: ctx.directory,
@@ -208,6 +210,7 @@ export const buildServices = (
     kernel: kernelMgr,
     pythonPath,
     pythonPathError,
+    envOptionsError: envOptionsErrorMessage,
     inspect: inspectSvc,
     read: readSvc,
     edit: editSvc,
@@ -226,22 +229,37 @@ const parseResolvedOptions = (value: unknown): PluginOptions => {
 let cachedEnvOptions: { readonly raw: string; readonly value: PluginOptions } | undefined
 const cachedInstanceOptions = new WeakMap<object, PluginOptions>()
 
-const resolveOptionsFromEnv = (instanceOptions?: unknown): PluginOptions => {
+let envOptionsError: string | undefined
+
+export const resolveOptionsFromEnv = (instanceOptions?: unknown): PluginOptions => {
   const raw = process.env.OPENCODE_IPYNB_OPTIONS
   if (raw) {
-    if (cachedEnvOptions?.raw === raw) return cachedEnvOptions.value
+    if (cachedEnvOptions?.raw === raw) {
+      envOptionsError = undefined
+      return cachedEnvOptions.value
+    }
     try {
       const parsed = JSON.parse(raw) as unknown
       const safe = PluginOptionsSchema.safeParse(parsed)
-      if (!safe.success) throw new Error("invalid plugin options")
+      if (!safe.success) {
+        const issue = safe.error.issues[0]
+        throw new Error(
+          issue === undefined
+            ? "invalid plugin options"
+            : `invalid plugin options: ${issue.path.join(".")} ${issue.message}`
+        )
+      }
       cachedEnvOptions = { raw, value: safe.data }
+      envOptionsError = undefined
       return safe.data
-    } catch {
+    } catch (error) {
+      envOptionsError = error instanceof Error ? error.message : String(error)
       return instanceOptions !== undefined && instanceOptions !== null
         ? parseResolvedOptions(instanceOptions)
         : parsePluginOptions({})
     }
   }
+  envOptionsError = undefined
   if (instanceOptions !== undefined && instanceOptions !== null) {
     if (typeof instanceOptions === "object") {
       const cached = cachedInstanceOptions.get(instanceOptions)
@@ -255,4 +273,3 @@ const resolveOptionsFromEnv = (instanceOptions?: unknown): PluginOptions => {
   return parsePluginOptions({})
 }
 
-export { resolveOptionsFromEnv }

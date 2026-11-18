@@ -102,11 +102,12 @@ const EMPTY_SHUTDOWN_RESPONSE = {
   outputs: [] as ReadonlyArray<unknown>
 } as unknown as RunResponse
 
-const killPidTree = (
+export const killPidTree = (
   pid: number | undefined,
-  signal: NodeJS.Signals = "SIGTERM"
+  signal: NodeJS.Signals = "SIGTERM",
+  notify?: (error: unknown) => void
 ): void => {
-  if (pid === undefined || pid <= 0) return
+  if (pid === undefined || pid <= 1) return
   if (process.platform === "win32") {
     killWindowsTree(pid)
     return
@@ -116,7 +117,10 @@ const killPidTree = (
   } catch {
     try {
       process.kill(pid, signal)
-    } catch {
+    } catch (directError) {
+      if ((directError as NodeJS.ErrnoException).code !== "ESRCH") {
+        notify?.(directError)
+      }
     }
   }
 }
@@ -124,9 +128,10 @@ const killPidTree = (
 const killProcessTree = (
   proc: ChildProcess,
   signal: NodeJS.Signals = "SIGTERM",
-  kernelPid?: number
+  kernelPid?: number,
+  notify?: (error: unknown) => void
 ): void => {
-  killPidTree(kernelPid, signal)
+  killPidTree(kernelPid, signal, notify)
   if (proc.pid === undefined) return
   if (process.platform === "win32") {
     killWindowsTree(proc.pid)
@@ -137,7 +142,10 @@ const killProcessTree = (
   } catch {
     try {
       proc.kill(signal)
-    } catch {
+    } catch (directError) {
+      if ((directError as NodeJS.ErrnoException).code !== "ESRCH") {
+        notify?.(directError)
+      }
     }
   }
 }
@@ -217,6 +225,11 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
       sink?.add(warningFrom("cleanup", error, `stopping the warm kernel for ${filePath}`))
     })
   }
+
+  const killFailure =
+    (state: KernelState): ((error: unknown) => void) =>
+    (error) =>
+      record(state, warningFrom("cleanup", error, "killing the kernel process tree"))
 
   const withKernelLock = async <T>(
     key: string,
@@ -415,7 +428,13 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
         state.pending.clear()
         try {
           proc.kill("SIGKILL")
-        } catch {
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+            record(
+              state,
+              warningFrom("cleanup", error, "killing the kernel after its stdout overflowed")
+            )
+          }
         }
         return
       }
@@ -470,10 +489,10 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
           )
         }
         state.pending.clear()
-        killProcessTree(proc, "SIGKILL", state.kernelPid)
+        killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
         return
       }
-      killProcessTree(proc, "SIGKILL", state.kernelPid)
+      killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
       failAllPending(
         state,
         "kernel subprocess exited",
@@ -483,7 +502,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
 
     proc.on("error", (err) => {
       state.alive = false
-      killProcessTree(proc, "SIGKILL", state.kernelPid)
+      killProcessTree(proc, "SIGKILL", state.kernelPid, killFailure(state))
       failAllPending(state, "kernel subprocess error", err.message)
     })
 
@@ -652,10 +671,11 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     if (!state.alive) return
     await sendShutdown(state)
     if (state.alive) {
-      killProcessTree(state.proc, "SIGTERM", state.kernelPid)
+      killProcessTree(state.proc, "SIGTERM", state.kernelPid, killFailure(state))
       await new Promise<void>((resolve) => {
         const t = setTimeout(() => {
-          if (state.alive) killProcessTree(state.proc, "SIGKILL", state.kernelPid)
+          if (state.alive)
+            killProcessTree(state.proc, "SIGKILL", state.kernelPid, killFailure(state))
           resolve()
         }, 3_000)
         state.proc.once("close", () => {
