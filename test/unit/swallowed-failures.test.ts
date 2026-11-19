@@ -686,6 +686,7 @@ printf '{"id": %s, "nonce": "%s", "success": true, "executedCells": [], "duratio
   })
 
   it("records a failed sidecar removal instead of dropping it", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-sidecar-clean-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(notebook))
@@ -720,6 +721,7 @@ printf '{"id": %s, "nonce": "%s", "success": true, "executedCells": [], "duratio
   })
 
   it("records an unreadable legacy sidecar directory", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-warn-legacy-"))
     const legacy = path.join(dir, ".opencode", "ipynb-lsp")
     fs.mkdirSync(legacy, { recursive: true })

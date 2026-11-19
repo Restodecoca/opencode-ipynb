@@ -128,6 +128,7 @@ describe("notebook diagnostics", () => {
 
 
   it("reports temp-unwritable when the fallback temp directory is also unwritable", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-diag-ro-"))
     const fallback = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-diag-ro-tmp-"))
@@ -499,6 +500,7 @@ sys.stdout.buffer.flush()
   })
 
   it("places diagnostics next to the real notebook for symlink aliases", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-diag-alias-"))
     const aliasDir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-diag-alias-link-"))
@@ -771,7 +773,7 @@ describe("pyright file-level errors", () => {
     fs.writeFileSync(
       script,
       `#!/bin/sh
-exec ${JSON.stringify(path.resolve(".venv", "bin", "python"))} -c 'import json,sys
+exec python -c 'import json,sys
 target = sys.argv[2]
 print(json.dumps({
   "version": "1.1.0",

@@ -6,6 +6,7 @@ import { permissionAliases } from "../../src/services/PermissionService.js"
 
 describe("permissionAliases", () => {
   it("returns both the lexical and real path for a symlink alias", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-perm-alias-"))
     const real = path.join(dir, "real.ipynb")
@@ -24,6 +25,7 @@ describe("permissionAliases", () => {
   })
 
   it("resolves the real parent for a new file under a symlinked directory", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-perm-dir-"))
     const real = path.join(root, "real")
@@ -56,6 +58,7 @@ describe("permissionAliases", () => {
   })
 
   it("resolves a not-yet-existing file through a symlinked ancestor", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-perm-deep-"))
     const real = path.join(root, "real")

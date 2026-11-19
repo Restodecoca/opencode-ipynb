@@ -83,6 +83,7 @@ describe("plugin hook reports swallowed failures", () => {
   })
 
   it("reports a sidecar cleanup failure when the plugin unloads", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const dir = makeDir()
     const file = path.join(dir, "notebook.ipynb")
@@ -158,6 +159,7 @@ describe("plugin hook reports swallowed failures", () => {
   })
 
   it("reports a swallowed diagnostics failure in metadata instead of dropping it", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const dir = makeDir()
     const file = path.join(dir, "notebook.ipynb")

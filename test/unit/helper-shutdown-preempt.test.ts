@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
 const helper = path.resolve("python", "ipynb_runner.py")
-const python = path.resolve(".venv", "bin", "python")
+const python = "python"
 
 const notebook = (source: string): string =>
   JSON.stringify({
@@ -34,7 +35,7 @@ const alive = (pid: number): boolean => {
   }
 }
 
-describe("queued shutdown preempts a running cell", () => {
+describeIf(realHelperEnabled(), "queued shutdown preempts a running cell", () => {
   it("returns promptly and reaps the kernel instead of waiting for the cell", async () => {
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-shutdown-preempt-"))

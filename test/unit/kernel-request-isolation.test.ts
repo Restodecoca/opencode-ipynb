@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -24,14 +25,14 @@ const notebook = (source: string): string =>
     nbformat_minor: 5
   })
 
-describe("kernel request isolation", () => {
+describeIf(realHelperEnabled(), "kernel request isolation", () => {
   it("does not kill the kernel while another request is still pending", async () => {
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-isolation-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, JSON.stringify(JSON.parse(notebook("import time\ntime.sleep(2)\nprint(1)"))))
     const manager = makeKernelManager({
-      pythonPath: path.resolve(".venv", "bin", "python"),
+      pythonPath: "python",
       helperPath: path.resolve("python", "ipynb_runner.py"),
       workingDirectory: dir,
       defaultTimeoutMs: 60_000

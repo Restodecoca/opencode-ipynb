@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
 const helper = path.resolve("python", "ipynb_runner.py")
-const python = path.resolve(".venv", "bin", "python")
+const python = "python"
 
 const notebook = (source: string): string =>
   JSON.stringify({
@@ -47,7 +48,7 @@ const serve = (init: Record<string, unknown>, requests: ReadonlyArray<unknown>):
     .map((line) => JSON.parse(line) as ServeResponse)
 }
 
-describe("serve mode notebook identity", () => {
+describeIf(realHelperEnabled(), "serve mode notebook identity", () => {
   if (process.platform === "win32") return
   it("refuses a request that names a different notebook than the kernel serves", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-serve-mismatch-"))

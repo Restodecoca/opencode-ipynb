@@ -297,6 +297,7 @@ describe("ipynb_lsp tool", () => {
   })
 
   it("propagates a fallback-temp permission denial instead of returning normal content", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-lsp-fallback-denial-"))
     const file = path.join(dir, "notebook.ipynb")

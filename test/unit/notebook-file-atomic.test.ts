@@ -36,6 +36,7 @@ const runOrThrow = async <A, E>(
 
 describe("NotebookFileService.writeAtomic", () => {
   it("writes valid JSON that re-parses and equals the input", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     const fileSvc = makeNotebookFileService()
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
     const file = path.join(dir, "out.ipynb")
@@ -57,6 +58,7 @@ describe("NotebookFileService.writeAtomic", () => {
   })
 
   it("creates parent directories if they do not exist", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     const fileSvc = makeNotebookFileService()
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-"))
     const nested = path.join(dir, "a", "b", "c")

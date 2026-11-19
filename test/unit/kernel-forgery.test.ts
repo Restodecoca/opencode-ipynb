@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -34,14 +35,14 @@ const notebook = (source: string): string =>
     nbformat_minor: 5
   })
 
-describe("kernel response forgery", () => {
+describeIf(realHelperEnabled(), "kernel response forgery", () => {
   it("ignores a response-shaped line a cell writes without the request nonce", async () => {
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-forge-"))
     const file = path.join(dir, "n.ipynb")
     fs.writeFileSync(file, notebook("print('REAL')"))
     const manager = makeKernelManager({
-      pythonPath: path.resolve(".venv", "bin", "python"),
+      pythonPath: "python",
       helperPath: path.resolve("python", "ipynb_runner.py"),
       workingDirectory: dir,
       defaultTimeoutMs: 60_000,

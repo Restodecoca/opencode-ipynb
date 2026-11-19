@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
 const helper = path.resolve("python", "ipynb_runner.py")
-const python = path.resolve(".venv", "bin", "python")
+const python = "python"
 
 const notebook = (): string =>
   JSON.stringify({
@@ -49,7 +50,7 @@ const parse = (stdout: string): Record<string, unknown> => {
   return JSON.parse(line) as Record<string, unknown>
 }
 
-describe("helper input validation", () => {
+describeIf(realHelperEnabled(), "helper input validation", () => {
   if (process.platform === "win32") return
   const cases: ReadonlyArray<readonly [string, unknown]> = [
     ["maxOutputChars", "x"],

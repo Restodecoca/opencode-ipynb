@@ -393,14 +393,31 @@ describeIf(!SKIP, "KernelManager", () => {
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
       expect(pid).toBeGreaterThan(0)
-      let alive = true
-      while (Date.now() < deadline && alive) {
+      // Signal 0 still succeeds for a zombie, and a killed grandchild that
+      // nobody reaps stays a zombie; read the state so the assertion means
+      // "stopped", not "still in /proc".
+      const running = (): boolean => {
         try {
           process.kill(pid, 0)
-          await new Promise((resolve) => setTimeout(resolve, 100))
         } catch {
-          alive = false
+          return false
         }
+        try {
+          const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+          const at = stat.lastIndexOf(")")
+          const state = stat.slice(at + 2, at + 3)
+          return state !== "Z" && state !== "X"
+        } catch {
+          return true
+        }
+      }
+      let alive = true
+      while (Date.now() < deadline && alive) {
+        if (!running()) {
+          alive = false
+          break
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100))
       }
       expect(alive).toBe(false)
     } finally {

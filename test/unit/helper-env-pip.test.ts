@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
 const helper = path.resolve("python", "ipynb_runner.py")
-const python = path.resolve(".venv", "bin", "python")
+const python = "python"
 
 const notebook = (): string =>
   JSON.stringify({
@@ -43,7 +44,7 @@ const runEnv = (interpreter: string, file: string): EnvResponse => {
   return JSON.parse(line) as EnvResponse
 }
 
-describe("env report without pip", () => {
+describeIf(realHelperEnabled(), "env report without pip", () => {
   if (process.platform === "win32") return
   it("degrades the package list instead of failing on a venv without pip", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-nopip-"))

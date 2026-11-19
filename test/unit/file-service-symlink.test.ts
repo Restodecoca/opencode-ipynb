@@ -157,6 +157,7 @@ describe("NotebookFileService realpath pinning", () => {
   })
 
   it("classifies unreadable notebooks as a validation error, not not-found", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-unreadable-"))
     const file = path.join(dir, "notebook.ipynb")

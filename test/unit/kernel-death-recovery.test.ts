@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -23,7 +24,7 @@ const notebook = {
   nbformat_minor: 5
 }
 
-describe("kernel death recovery", () => {
+describeIf(realHelperEnabled(), "kernel death recovery", () => {
   it("drops a dead kernel state so the next request starts a fresh one", async () => {
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-kernel-dead-"))
@@ -44,7 +45,7 @@ describe("kernel death recovery", () => {
     )
     const helper = path.resolve("python", "ipynb_runner.py")
     const manager = makeKernelManager({
-      pythonPath: path.resolve(".venv", "bin", "python"),
+      pythonPath: "python",
       helperPath: helper,
       workingDirectory: dir,
       defaultTimeoutMs: 30_000

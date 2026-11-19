@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { expect, it } from "bun:test"
+import { describeIf, realHelperEnabled } from "../helpers.js"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
 const helper = path.resolve("python", "ipynb_runner.py")
-const python = path.resolve(".venv", "bin", "python")
+const python = "python"
 
 const notebook = (source: string): string =>
   JSON.stringify({
@@ -25,12 +26,21 @@ const notebook = (source: string): string =>
     nbformat_minor: 5
   })
 
+// A killed helper that nobody reaps becomes a zombie, and signal 0 still
+// succeeds for a zombie. On Linux read the process state so "alive" means
+// actually running, not merely present in the process table.
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0)
-    return true
   } catch {
     return false
+  }
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+    const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3)
+    return state !== "Z" && state !== "X"
+  } catch {
+    return true
   }
 }
 
@@ -43,7 +53,7 @@ const waitFor = async (predicate: () => boolean, timeoutMs: number): Promise<boo
   return predicate()
 }
 
-describe("parent death watchdog", () => {
+describeIf(realHelperEnabled(), "parent death watchdog", () => {
   it("kills the helper and its kernel when the parent dies mid-cell", async () => {
     if (process.platform === "win32") return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-watchdog-"))

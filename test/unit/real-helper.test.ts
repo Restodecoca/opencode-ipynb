@@ -407,13 +407,17 @@ describeIf(
             start: undefined,
             end: undefined,
             kernel: undefined,
-            timeoutMs: 1_000,
+            // The budget must cover the kernel's first start (measured ~1.2 s
+            // inside a container) plus enough of the cell for the child pid to
+            // be written; a 1 s budget expired during startup on CI, so the
+            // pid file never appeared and the test proved nothing.
+            timeoutMs: 5_000,
             save: false,
             workingDirectory: undefined,
             maxOutputChars: 4_000
           })
         )
-        const deadline = Date.now() + 6_000
+        const deadline = Date.now() + 20_000
         let pid = 0
         while (Date.now() < deadline) {
           if (fs.existsSync(pidFile)) {
@@ -423,14 +427,31 @@ describeIf(
           await new Promise((resolve) => setTimeout(resolve, 50))
         }
         expect(pid).toBeGreaterThan(0)
-        let alive = true
-        while (Date.now() < deadline && alive) {
+        // Signal 0 still succeeds for a zombie, and the descendant's parent may
+        // be gone without anyone reaping it; read the state so "alive" means
+        // running rather than merely present in the process table.
+        const running = (): boolean => {
           try {
             process.kill(pid, 0)
-            await new Promise((resolve) => setTimeout(resolve, 100))
           } catch {
-            alive = false
+            return false
           }
+          try {
+            const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+            const at = stat.lastIndexOf(")")
+            const state = stat.slice(at + 2, at + 3)
+            return state !== "Z" && state !== "X"
+          } catch {
+            return true
+          }
+        }
+        let alive = true
+        while (Date.now() < deadline && alive) {
+          if (!running()) {
+            alive = false
+            break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100))
         }
         expect(alive).toBe(false)
       } finally {
