@@ -59,6 +59,7 @@ interface PendingRequest {
 interface KernelState {
   proc: ChildProcess
   filePath: string
+  reportedPath: string
   pythonPath: string
   helperPath: string
   requestedKernel: string | undefined
@@ -317,6 +318,7 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     const state: KernelState = {
       proc,
       filePath,
+      reportedPath: filePath,
       pythonPath: runtime.pythonPath,
       helperPath: runtime.helperPath,
       requestedKernel,
@@ -594,9 +596,16 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     runtimeInput?: KernelRuntimeOptions
   ): Promise<KernelState> => {
     const key = await canonicalPathForKernel(filePath)
-    return withKernelLock(key, () =>
-      getOrStartUnlocked(key, request, runtimeFromRequest(runtimeInput))
-    )
+    return withKernelLock(key, async () => {
+      const state = await getOrStartUnlocked(key, request, runtimeFromRequest(runtimeInput))
+      // The state is keyed by the canonical path, but the kernel list must
+      // report the spelling the caller actually used: on macOS the session
+      // dir is a symlink (/tmp -> /private/tmp) and on Windows an 8.3 short
+      // name (RUNNER~1), and a canonical listing would show paths the user
+      // never typed.
+      state.reportedPath = filePath
+      return state
+    })
   }
 
   const getOrStartUnlocked = async (
@@ -778,6 +787,11 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
             detail: err instanceof Error ? err.message : String(err)
           })
       })
+      // execute canonicalizes before getOrStart, so getOrStart records the
+      // canonical spelling; the kernel list must report the one the caller
+      // used, which differs from the canonical form on macOS (symlinked temp
+      // dirs) and Windows (8.3 short names).
+      state.reportedPath = filePath
       const requestSink = options?.warningSink
       const timeoutMs = request.timeoutMs ?? opts.defaultTimeoutMs
       state.inflight += 1
@@ -959,6 +973,17 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
     })
 
   const isRunning = (filePath: string): boolean => {
+    // States are keyed by canonicalPathForKernel, and its resolver and the
+    // sync one below disagree on Windows 8.3 spellings (RUNNER~1 vs the long
+    // name), so a fresh resolution can miss a kernel that is alive and well.
+    // Consult the alias recorded at registration first — the same spelling the
+    // state was stored under — and fall back to a fresh resolution only for
+    // paths that were never executed through this manager.
+    const aliased = canonicalAliases.get(filePath)
+    if (aliased !== undefined) {
+      const known = states.get(aliased)
+      if (known !== undefined) return known.alive
+    }
     const key = (() => {
       try {
         return realpathSync(filePath)
@@ -977,10 +1002,13 @@ export const makeKernelManager = (opts: KernelManagerOptions): KernelManagerShap
 
   const list = (): ReadonlyArray<KernelInfo> => {
     const out: KernelInfo[] = []
-    for (const [filePath, state] of states) {
+    for (const state of states.values()) {
       if (!state.alive) continue
       out.push({
-        filePath,
+        // The spelling the caller last used, not the canonical key: the list
+        // is user-facing and canonical paths differ from what was typed on
+        // every platform that resolves symlinks or 8.3 short names.
+        filePath: state.reportedPath,
         pid: state.pid,
         lastUsedAt: state.lastUsed,
         requestsHandled: state.requestsHandled,
