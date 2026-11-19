@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -13,9 +13,20 @@ const SKIP = !pythonHas("nbclient")
 describe("killPidTree failure reporting", () => {
   it("reports when the group kill fails and the direct kill is refused", () => {
     if (process.platform === "win32") return
-    if (typeof process.getuid === "function" && process.getuid() === 0) return
+    // PID 2 is kthreadd only on Linux: on macOS no such process exists, both
+    // kills report ESRCH, and the tree correctly stays silent. Simulate a
+    // live process the caller cannot signal, so the refusal path is exercised
+    // by the kill bookkeeping itself rather than by whichever privileged PIDs
+    // the operating system happens to run.
+    const spy = spyOn(process, "kill").mockImplementation((() => {
+      throw Object.assign(new Error("refused"), { code: "EPERM" })
+    }) as never)
     const failures: unknown[] = []
-    killPidTree(2, "SIGTERM", (error) => failures.push(error))
+    try {
+      killPidTree(123_456, "SIGTERM", (error) => failures.push(error))
+    } finally {
+      spy.mockRestore()
+    }
     expect(failures.length).toBe(1)
     expect((failures[0] as NodeJS.ErrnoException).code).toBe("EPERM")
   })
