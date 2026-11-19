@@ -162,11 +162,24 @@ describe("NotebookSchema validation", () => {
     )
     try {
       const { realpathWithRetry } = await import("../../src/utils/realpath.js")
-      await expect(realpathWithRetry(file)).resolves.toBe(fs.realpathSync(file))
+      // Windows spells one file several ways (8.3 short names such as
+      // RUNNER~1) and the two resolution APIs disagree there, so compare what
+      // the path denotes instead of how it is spelled: a resolution that
+      // pointed anywhere else would fail the stat identity check.
+      const resolved = await realpathWithRetry(file)
+      expect(fs.existsSync(resolved)).toBe(true)
+      expect(fs.statSync(resolved).ino).toBe(fs.statSync(file).ino)
+      expect(fs.statSync(resolved).dev).toBe(fs.statSync(file).dev)
       const missing = path.join(dir, "missing.ipynb")
+      // A wall-clock budget here only measures runner load: on a loaded
+      // single-process suite run the three setImmediate-spaced attempts took
+      // 1.2 s for identical code, so the old 1 s ceiling was a lottery. The
+      // miss path itself is pinned structurally by the code (three attempts,
+      // no sleeps); this ceiling is a hang guard, far above any loaded runner
+      // and far below an actual spin.
       const started = Date.now()
       await expect(realpathWithRetry(missing)).rejects.toMatchObject({ code: "ENOENT" })
-      expect(Date.now() - started).toBeLessThan(1_000)
+      expect(Date.now() - started).toBeLessThan(5_000)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
