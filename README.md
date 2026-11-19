@@ -18,7 +18,7 @@ The plugin is **opt-in**, distributed via npm, and does not modify the OpenCode 
 
 ## Installation
 
-OpenCode 2.x loads plugins from the `plugins` key. Until the V2 line (`2.0.0`) is published, point OpenCode at a checkout directory:
+OpenCode 2.x loads plugins from the `plugins` key. Point OpenCode at a checkout directory for an unreleased change:
 
 ```json
 {
@@ -27,14 +27,16 @@ OpenCode 2.x loads plugins from the `plugins` key. Until the V2 line (`2.0.0`) i
 }
 ```
 
-The npm `latest` tag still points at the V1 `0.1.2` package, which does **not** load in OpenCode 2. After the V2 package is published, the versioned form is:
+The V2 line is published from `3.0.0` onward, so the versioned form is:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-ipynb@2.0.0"]
+  "plugins": ["opencode-ipynb@3.0.0"]
 }
 ```
+
+Anything below `2.0.0` is the V1 package, which does **not** load in OpenCode 2.
 
 `opencode.example.jsonc` is a machine-independent local example.
 
@@ -369,7 +371,7 @@ bun run build
 npm pack --dry-run
 ```
 
-The `2.0.0` release is the V2-only line. The npm `latest` tag currently points at the V1 `0.1.2` package; publish `2.0.0` before advertising the package name as a V2 install. If you publish under a scope instead, update `package.json`, the install snippet, and this release tag convention together.
+The `3.0.0` release is the current V2-only line (`2.0.0` was the first). The npm `latest` tag must point at a `2.0.0`-or-newer package for the bare package name to load in OpenCode 2. If you publish under a scope instead, update `package.json`, the install snippet, and this release tag convention together.
 
 ## Effect LSP setup (for development)
 
