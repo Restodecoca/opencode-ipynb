@@ -46,11 +46,19 @@ const LEGACY_DIRECTORY = ".opencode/ipynb-lsp"
 const LEGACY_FILE = /\.[0-9a-f]{16}\.py$/
 const MAX_AGE_MS = 60 * 60 * 1000
 
+// realpath only resolves what already exists. A virtual document can name a
+// notebook that does not exist on disk yet, and on macOS the temp dir itself is
+// a symlink (/tmp -> /private/tmp): returning the lexical spelling for a
+// missing file made the root-containment check compare two spellings of one
+// directory, so the sidecar fell back outside the session root. Resolve the
+// deepest existing ancestor and keep the missing tail lexical.
 const realPath = (filePath: string): string => {
   try {
     return fs.realpathSync(filePath)
   } catch {
-    return filePath
+    const parent = path.dirname(filePath)
+    if (parent === filePath) return filePath
+    return path.join(realPath(parent), path.basename(filePath))
   }
 }
 
