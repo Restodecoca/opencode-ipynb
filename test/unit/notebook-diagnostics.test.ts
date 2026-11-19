@@ -767,6 +767,18 @@ sys.stdout.buffer.flush()
 describe("pyright file-level errors", () => {
   it("keeps the batch when a diagnostic has no range", async () => {
     if (process.platform === "win32") return
+    // The fake pyright is a python script; skip where no interpreter is usable.
+    const pythonUsable = (() => {
+      try {
+        return Bun.spawnSync(["python", "-c", "print(1)"], {
+          stdout: "pipe",
+          stderr: "pipe"
+        }).exitCode === 0
+      } catch {
+        return false
+      }
+    })()
+    if (!pythonUsable) return
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ipynb-diag-norange-"))
     const file = path.join(dir, "notebook.ipynb")
     const script = path.join(dir, "norange-pyright")
