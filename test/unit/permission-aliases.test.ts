@@ -16,7 +16,9 @@ describe("permissionAliases", () => {
     try {
       const paths = await permissionAliases(alias, [dir])
       expect(paths).toContain(alias)
-      expect(paths).toContain(real)
+      // The real alias comes back resolved; on macOS the temp dir itself is a
+      // symlink (/tmp -> /private/tmp), so the resolved spelling differs.
+      expect(paths).toContain(fs.realpathSync(real))
       expect(paths).toContain("alias.ipynb")
       expect(paths).toContain("real.ipynb")
     } finally {
@@ -35,7 +37,10 @@ describe("permissionAliases", () => {
     try {
       const paths = await permissionAliases(path.join(link, "new.ipynb"))
       expect(paths).toHaveLength(2)
-      expect(paths[1]).toBe(path.join(real, "new.ipynb"))
+      // The file does not exist yet, so resolve its parent: on macOS the temp
+      // dir itself is a symlink (/tmp -> /private/tmp) and a lexical compare
+      // reports a spurious mismatch.
+      expect(fs.realpathSync(path.dirname(paths[1]!))).toBe(fs.realpathSync(real))
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
@@ -69,7 +74,9 @@ describe("permissionAliases", () => {
     try {
       const paths = await permissionAliases(file, [root])
       expect(paths).toContain(file)
-      expect(paths).toContain(path.join(real, "new", "out.py"))
+      // The file does not exist yet, but its parent does: expect the resolved
+      // spelling of the parent (macOS spells the temp dir through a symlink).
+      expect(paths).toContain(path.join(fs.realpathSync(real), "new", "out.py"))
       expect(paths).toContain(path.join("real", "new", "out.py"))
     } finally {
       fs.rmSync(root, { recursive: true, force: true })

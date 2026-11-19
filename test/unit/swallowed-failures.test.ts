@@ -12,6 +12,7 @@ import { makePathService } from "../../src/services/PathService.js"
 import { makePermissionService } from "../../src/services/PermissionService.js"
 import { makePythonService, type PythonServiceShape } from "../../src/services/PythonService.js"
 import { makeWarningSink } from "../../src/utils/warnings.js"
+import { samePhysicalPath } from "../helpers.js"
 import { NotebookValidationError } from "../../src/domain/errors.js"
 import { DEFAULT_NOTEBOOK_FORMAT } from "../../src/utils/json.js"
 import type { NotebookRaw } from "../../src/domain/notebook.js"
@@ -697,7 +698,10 @@ printf '{"id": %s, "nonce": "%s", "success": true, "executedCells": [], "duratio
       target: fs.PathLike,
       options?: unknown
     ) => {
-      if (path.resolve(String(target)) === path.resolve(materialized.path)) {
+      // cleanup resolves the sidecar path, which on macOS is spelled through
+      // the /tmp symlink and on Windows through an 8.3 short name; match the
+      // physical file instead of the lexical spelling.
+      if (samePhysicalPath(String(target), materialized.path)) {
         return Promise.reject(
           Object.assign(new Error("busy"), { code: "EBUSY" })
         )
@@ -730,7 +734,9 @@ printf '{"id": %s, "nonce": "%s", "success": true, "executedCells": [], "duratio
       target: fs.PathLike,
       options?: unknown
     ) => {
-      if (path.resolve(String(target)) === path.resolve(legacy)) {
+      // Same as above: the legacy directory is listed through its resolved
+      // spelling, so match the physical directory.
+      if (samePhysicalPath(String(target), legacy)) {
         return Promise.reject(
           Object.assign(new Error("denied"), { code: "EACCES" })
         )

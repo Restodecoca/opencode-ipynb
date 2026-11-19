@@ -6,6 +6,7 @@ import * as path from "node:path"
 import { NotebookValidationError } from "../../src/domain/errors.js"
 import { makeNotebookFileService } from "../../src/services/NotebookFileService.js"
 import { setAfterRenameHook } from "../../src/utils/rename-hook.js"
+import { samePhysicalPath } from "../helpers.js"
 
 const notebook = (source: string): string =>
   `${JSON.stringify(
@@ -80,7 +81,13 @@ describe("concurrent replacement detection", () => {
       to: fs.PathLike
     ) => {
       return original(from, to).then((result) => {
-        if (!injected && path.resolve(String(to)) === path.resolve(file)) {
+        // The implementation renames to the realpath-resolved target: on
+        // macOS the temp dir is a symlink and on Windows it is an 8.3 short
+        // name, so the resolved spelling differs from the lexical one. Match
+        // what the target denotes instead of how it is spelled. The temp's
+        // own move (to a not-yet-existing name) fails the stat check and is
+        // skipped, so only the final rename can inject.
+        if (!injected && samePhysicalPath(String(to), file)) {
           injected = true
           inodeBefore = fs.statSync(file).ino
           fs.writeFileSync(file, notebook("# IN-PLACE"))
@@ -132,7 +139,8 @@ describe("concurrent replacement detection", () => {
       to: fs.PathLike
     ) => {
       return original(from, to).then((result) => {
-        if (!injected && path.resolve(String(to)) === path.resolve(file)) {
+        // Same as above: match the resolved target physically, not lexically.
+        if (!injected && samePhysicalPath(String(to), file)) {
           injected = true
           const competitor = path.join(dir, "competitor.tmp")
           fs.writeFileSync(competitor, notebook("# COMPETITOR"))

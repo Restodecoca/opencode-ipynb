@@ -229,7 +229,9 @@ describe("permission ordering", () => {
         })
       )
       expect(patterns[0]).toContain(link)
-      expect(patterns[0]).toContain(real)
+      // The real target is included in resolved form; on macOS the temp dir is
+      // spelled through a symlink, so that form differs from the lexical one.
+      expect(patterns[0]).toContain(fs.realpathSync(real))
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

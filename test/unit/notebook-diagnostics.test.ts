@@ -509,7 +509,9 @@ sys.stdout.buffer.flush()
     fs.writeFileSync(real, "{}")
     fs.symlinkSync(real, alias)
     try {
-      expect(path.dirname(diagnosticTempPath(alias))).toBe(dir)
+      // The temp file lands next to the real notebook, which is the resolved
+      // directory; on macOS the lexical temp dir spells it through a symlink.
+      expect(path.dirname(diagnosticTempPath(alias))).toBe(fs.realpathSync(dir))
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
       fs.rmSync(aliasDir, { recursive: true, force: true })
